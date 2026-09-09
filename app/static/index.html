@@ -1,0 +1,394 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta name="theme-color" content="#214c34" />
+    <title>Grow · Plant time-lapse</title>
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 40 40'%3E%3Crect width='40' height='40' rx='10' fill='%23214c34'/%3E%3Cpath d='M20 32V14M20 23C6 23 8 9 8 9s15 0 12 14M20 17C19 5 33 6 33 6s0 12-13 11' fill='%23d6e6af'/%3E%3C/svg%3E"
+    />
+    <link rel="stylesheet" href="/style.css" />
+    <script src="/app.js" defer></script>
+  </head>
+  <body>
+    <header class="app-header">
+      <a class="brand" href="#projects"
+        ><span aria-hidden="true">❧</span> Grow
+        <small>Plant time-lapse</small></a
+      ><span id="connection" role="status">Connecting…</span>
+    </header>
+    <aside class="sidebar">
+      <a href="#projects" class="all-projects">All projects</a
+      ><button class="primary" id="new-project">＋ New project</button>
+      <p class="nav-label">YOUR PROJECTS</p>
+      <nav id="project-nav" aria-label="Projects"></nav>
+      <p class="sidebar-help">
+        Each project has its own camera, schedule, photos, and videos.
+      </p>
+    </aside>
+    <main>
+      <div id="notice" role="status" hidden></div>
+      <section id="projects-view">
+        <div class="page-heading">
+          <div>
+            <p class="eyebrow">YOUR GROWING SPACE</p>
+            <h1>Projects</h1>
+            <p>
+              Track each plant from its first photo to its finished time-lapse.
+            </p>
+          </div>
+          <button class="primary" data-new>＋ New project</button>
+        </div>
+        <div class="summary-strip">
+          <span id="project-summary">Loading projects…</span
+          ><span id="disk-summary"></span>
+        </div>
+        <div id="project-grid" class="project-grid"></div>
+        <div class="info-panel">
+          <strong>Record now. Come back later.</strong>
+          <p>
+            Running projects continue with this page closed. After a container
+            or host restart, they resume automatically as soon as the app and
+            camera are available.
+          </p>
+        </div>
+      </section>
+      <section id="project-view" hidden>
+        <a href="#projects" class="back-link">← All projects</a>
+        <div class="page-heading">
+          <div>
+            <div class="heading-line">
+              <h1 id="project-title">Project</h1>
+              <span id="project-status" class="badge"></span>
+            </div>
+            <p id="project-subtitle"></p>
+          </div>
+          <button id="record-button" class="primary">Start recording</button>
+        </div>
+        <nav class="tabs" aria-label="Project sections">
+          <button data-tab="overview">Overview</button
+          ><button data-tab="photos">Photos</button
+          ><button data-tab="settings">Settings</button
+          ><button data-tab="videos">Videos</button>
+        </nav>
+        <div id="project-alert" class="info-panel" role="status" hidden></div>
+        <section id="overview-panel" class="tab-panel">
+          <div class="metrics">
+            <article>
+              <span>Photos captured</span><strong id="photo-count">0</strong>
+            </article>
+            <article id="next-capture-metric" class="ring-metric"></article>
+            <article id="completion-metric" class="ring-metric"></article>
+            <article>
+              <span>Video length</span
+              ><strong id="video-duration">0 seconds</strong>
+            </article>
+          </div>
+          <div class="overview-grid">
+            <article class="card">
+              <div class="card-heading">
+                <h2 id="image-title">Latest photo</h2>
+                <span id="image-time"></span>
+              </div>
+              <div class="image-stage">
+                <img
+                  id="latest-image"
+                  alt="Latest photo from this project"
+                  hidden
+                />
+                <div id="image-empty">
+                  <span aria-hidden="true">❧</span>
+                  <h3>No photos yet</h3>
+                  <p>Check your camera in Settings, then start recording.</p>
+                  <button data-tab="settings" class="outline">
+                    Set up camera
+                  </button>
+                </div>
+              </div>
+              <div class="card-footer">
+                <button id="preview-button" class="outline">
+                  Preview camera</button
+                ><button id="capture-button" class="outline">
+                  Capture a photo
+                </button>
+              </div>
+              <p class="card-note" id="preview-note">
+                Preview checks the camera without saving a photo.
+              </p>
+            </article>
+            <article class="card schedule-card">
+              <h2>Recording schedule</h2>
+              <dl id="schedule"></dl>
+              <button data-tab="settings" class="outline">Edit settings</button>
+              <p class="resilience-note">
+                Your recording state is saved automatically. A restart never
+                pauses a running project.
+              </p>
+            </article>
+          </div>
+          <div class="section-heading">
+            <h2>Recent photos</h2>
+            <button data-tab="photos" class="text-button">
+              View all photos →
+            </button>
+          </div>
+          <div id="recent-photos" class="photo-grid"></div>
+          <div class="section-heading"><h2>Activity</h2></div>
+          <div id="events" class="card events"></div>
+        </section>
+        <section id="photos-panel" class="tab-panel" hidden>
+          <div class="section-heading">
+            <div>
+              <h2>Project photos</h2>
+              <p>Open a photo to view the original. All photos are kept.</p>
+            </div>
+          </div>
+          <div id="all-photos" class="photo-grid"></div>
+          <div class="pagination">
+            <button id="previous" class="outline">← Previous</button
+            ><span id="page-label"></span
+            ><button id="next" class="outline">Next →</button>
+          </div>
+        </section>
+        <section id="videos-panel" class="tab-panel" hidden>
+          <div class="section-heading">
+            <div>
+              <h2>Time-lapse videos</h2>
+              <p>
+                Preview your time-lapse, remove unwanted frames, then export an MP4.
+                Your original photos are always kept.
+              </p>
+            </div>
+            <button id="export-button" class="primary" disabled>Export final video</button>
+          </div>
+          <div class="card video-editor">
+            <div class="card-heading">
+              <h3>1. Preview your video</h3>
+              <button id="refresh-timeline" class="outline">Refresh frames</button>
+            </div>
+            <p id="timeline-summary" class="editor-note" role="status">Loading frames…</p>
+            <div class="timeline-stage">
+              <img id="timeline-image" alt="Selected time-lapse frame" hidden />
+              <p id="timeline-empty">No photos yet. Capture a photo from Overview to begin.</p>
+            </div>
+            <div class="timeline-controls">
+              <div class="button-row">
+                <button id="play-timeline" class="primary" disabled>Play preview</button>
+                <button id="frame-back" class="outline" disabled aria-label="Previous video frame">← Frame</button>
+                <button id="frame-forward" class="outline" disabled aria-label="Next video frame">Frame →</button>
+              </div>
+              <label for="timeline-scrubber">Video position</label>
+              <input id="timeline-scrubber" type="range" min="0" max="0" value="0" step="1" disabled />
+              <div class="frame-details">
+                <span id="current-frame-label">Select a frame below to inspect it.</span>
+                <a id="frame-original" target="_blank" rel="noopener" hidden>Open original photo ↗</a>
+                <button id="remove-current" class="outline" disabled>Remove this frame</button>
+              </div>
+              <p class="help">Preview uses smaller images for quick loading and may play more slowly on a slow connection. Your MP4 uses the full selected resolution and video speed.</p>
+            </div>
+          </div>
+          <div class="section-heading">
+            <div><h3>2. Choose frames to keep</h3><p>Check unwanted frames and remove them from the video. Removed frames can be restored anytime.</p></div>
+          </div>
+          <div class="selection-toolbar">
+            <label class="check"><input id="select-page" type="checkbox" /> Select this page</label>
+            <span id="selection-count" role="status">0 selected</span>
+            <button id="remove-selected" class="outline" disabled>Remove selected</button>
+            <button id="restore-selected" class="outline" disabled>Restore selected</button>
+          </div>
+          <div id="timeline-grid" class="photo-grid"></div>
+          <div class="pagination">
+            <button id="timeline-previous" class="outline" disabled>← Previous</button>
+            <span id="timeline-page"></span>
+            <button id="timeline-next" class="outline" disabled>Next →</button>
+          </div>
+          <p class="help">Frame edits save automatically. New captures appear when you click Refresh frames. Each export keeps the frame selection and settings used when it was queued.</p>
+          <div class="section-heading"><h3>3. Download your videos</h3></div>
+          <div id="export-list"></div>
+          <p class="help">
+            Interrupted video exports restart automatically when the app comes
+            back online.
+          </p>
+        </section>
+      </section>
+      <section id="editor-view" hidden>
+        <div id="new-heading" class="page-heading">
+          <div>
+            <a href="#projects" class="back-link">← All projects</a>
+            <h1>New project</h1>
+            <p>
+              Choose a camera and schedule. You can start recording when you're
+              ready.
+            </p>
+          </div>
+        </div>
+        <form id="settings-form">
+          <fieldset id="settings-fields" disabled>
+            <div class="editor-grid">
+              <section class="card form-card">
+                <h2>1. Project & schedule</h2>
+                <label
+                  >Project name<input
+                    name="name"
+                    required
+                    maxlength="80"
+                    placeholder="e.g. Basil on the windowsill"
+                /></label>
+                <div class="form-row">
+                  <label
+                    >Take a photo every<select name="interval_minutes">
+                      <option value="1">1 minute</option>
+                      <option value="5">5 minutes</option>
+                      <option value="10">10 minutes</option>
+                      <option value="15">15 minutes</option>
+                      <option value="30">30 minutes</option>
+                      <option value="60">1 hour</option>
+                      <option value="180">3 hours</option>
+                      <option value="360">6 hours</option>
+                      <option value="1440">24 hours</option>
+                    </select></label
+                  ><label
+                    >Record for (days)<input
+                      name="duration_days"
+                      type="number"
+                      min="1"
+                      max="1095"
+                      required
+                  /></label>
+                </div>
+                <p class="help">
+                  30 minutes is a useful starting point for plant growth.
+                  Duration starts when you first start recording and includes
+                  paused days.
+                </p>
+                <label
+                  >Timezone<input
+                    name="timezone"
+                    required
+                    list="timezones"
+                    placeholder="America/Toronto" /></label
+                ><datalist id="timezones">
+                  <option value="UTC"></option>
+                  <option value="America/Toronto"></option>
+                  <option value="America/New_York"></option>
+                  <option value="America/Los_Angeles"></option>
+                  <option value="Europe/London"></option></datalist
+                ><label class="check"
+                  ><input name="daylight_only" type="checkbox" />Only capture
+                  during these hours</label
+                >
+                <div class="form-row" id="capture-window">
+                  <label
+                    >From<input name="day_start" type="time" required /></label
+                  ><label
+                    >Until<input name="day_end" type="time" required
+                  /></label>
+                </div>
+                <p class="help" id="window-help">
+                  Times follow your selected timezone, including daylight saving
+                  changes.
+                </p>
+              </section>
+              <section class="card form-card">
+                <h2>2. Camera</h2>
+                <label
+                  >Webcam<select
+                    name="camera_device"
+                    id="camera-device"
+                    required
+                  ></select
+                ></label>
+                <div class="button-row">
+                  <button type="button" id="refresh-cameras" class="outline">
+                    Refresh cameras</button
+                  ><button type="button" id="test-camera" class="outline">
+                    Test camera
+                  </button>
+                </div>
+                <p id="camera-help" class="help" role="status"></p>
+                <img
+                  id="test-image"
+                  alt="Test preview from the selected camera"
+                  hidden
+                />
+                <p id="test-note" class="help" hidden>
+                  Preview only — this photo is not saved.
+                </p>
+                <label class="check"><input type="checkbox" name="autofocus" id="autofocus" /> Autofocus before each photo</label>
+                <p id="focus-help" class="help" role="status">Checking camera focus support…</p>
+                <label>Focus settling time (seconds)<input name="focus_settle_seconds" type="number" min="1" max="15" required /></label>
+                <p class="help">On supported cameras, autofocus runs while the camera streams for at least this long before saving a photo. Increase the time if the lens is still adjusting. Focus is not guaranteed; use Test camera to check. When off, camera focus is left unchanged.</p>
+                <label
+                  >Photo resolution<select id="resolution">
+                    <option value="640x480">640 × 480</option>
+                    <option value="1280x720">1280 × 720 (HD)</option>
+                    <option value="1920x1080">1920 × 1080 (Full HD)</option>
+                  </select></label
+                >
+                <button type="button" id="detect-resolution" class="outline">Use largest resolution</button>
+                <p id="resolution-help" class="help" role="status">
+                  Selecting a camera automatically sets its largest supported resolution and matching format. Photos and exported videos use this resolution.
+                </p>
+              </section>
+            </div>
+            <details class="card advanced">
+              <summary>
+                Advanced settings
+                <span>Camera format, warm-up, storage, and video speed</span>
+              </summary>
+              <div class="advanced-fields">
+                <label
+                  >Camera format<select name="input_format">
+                    <option value="auto">Automatic</option>
+                    <option value="mjpeg">MJPEG</option>
+                    <option value="yuyv422">YUYV 4:2:2</option>
+                  </select></label
+                ><label
+                  >Camera warm-up (seconds)<input
+                    name="warmup_seconds"
+                    type="number"
+                    min="0"
+                    max="10"
+                    required /></label
+                ><label
+                  >Keep this much disk space free (MB)<input
+                    name="reserve_mb"
+                    type="number"
+                    min="100"
+                    max="1048576"
+                    required /></label
+                ><label
+                  >Video frame rate (fps)<input
+                    name="export_fps"
+                    type="number"
+                    min="1"
+                    max="60"
+                    required
+                /></label>
+              </div>
+              <p class="help">
+                A higher frame rate makes the video play faster. If storage is
+                low, captures retry automatically without deleting your photos.
+              </p>
+            </details>
+            <div id="estimate" class="estimate"></div>
+            <div class="save-bar">
+              <span id="save-message" role="status"
+                >Your changes apply to this project only.</span
+              ><button type="submit" id="save-settings" class="primary">
+                Save settings
+              </button>
+            </div>
+          </fieldset>
+        </form>
+      </section>
+      <footer>
+        Grow · Photos and projects are stored on this machine.<span
+          id="mode"
+        ></span>
+      </footer>
+    </main>
+  </body>
+</html>

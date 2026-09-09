@@ -1,0 +1,9 @@
+.git
+.venv
+__pycache__
+.pytest_cache
+data
+.env
+test-results
+compose.override.yaml
+.camera-devices.*

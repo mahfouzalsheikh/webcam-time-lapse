@@ -1,0 +1,26 @@
+services:
+  grow:
+    build: .
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 45s
+    device_cgroup_rules:
+      - "c 81:* rw"
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${PORT:-8091}:8000"
+    environment:
+      DATA_DIR: /data
+      CAMERA_DEVICE_ROOT: /host-dev
+    volumes:
+      - grow-data:/data
+      - type: bind
+        source: /dev
+        target: /host-dev
+        read_only: true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+volumes:
+  grow-data:
