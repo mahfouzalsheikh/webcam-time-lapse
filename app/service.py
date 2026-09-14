@@ -53,6 +53,11 @@ class Recorder:
         self.export_task = None
         self.scheduler_task = None
         self.owner = None
+        self.deleting = False
+
+    def ensure_available(self):
+        if self.deleting:
+            raise ValueError("This project is being deleted")
 
     def settings(self):
         return Settings.model_validate(self.store.get("settings"))
@@ -65,6 +70,7 @@ class Recorder:
             self.owner.close()
             raise RuntimeError("This data directory already has a recorder. Run exactly one worker.")
         # A killed process can leave temporary images or half-rendered videos behind.
+        self.cleanup_deleted_frames()
         for folder, pattern in (("frames", r"\.[0-9a-f]{32}\.jpg"),
                                 ("exports", r"\.?[0-9a-f]{32}\.(txt|log)|\.[0-9a-f]{32}\.mp4")):
             for path in (self.root / folder).iterdir():
@@ -102,6 +108,7 @@ class Recorder:
         if not self.demo:
             settings = settings.model_copy(update={"camera_device": dslr.stable_device(settings.camera_device)})
         async with self.state_lock:
+            self.ensure_available()
             state = self.store.get("runtime")
             if state["started_at"]:
                 state["ends_at"] = state["started_at"] + settings.duration_days * 86400
@@ -112,6 +119,7 @@ class Recorder:
 
     async def set_running(self, running):
         async with self.state_lock:
+            self.ensure_available()
             state = self.store.get("runtime")
             now = time.time()
             if running and state["ends_at"] and state["ends_at"] <= now:
@@ -165,6 +173,7 @@ class Recorder:
         if self.camera_lock.locked() and not scheduled:
             raise ValueError("Camera is busy. Try again in a moment.")
         async with self.camera_lock:
+            self.ensure_available()
             settings = preview_settings if not save and preview_settings is not None else self.settings()
             original_device = settings.camera_device
             if not self.demo:
@@ -250,6 +259,7 @@ class Recorder:
             return {"cutoff": cutoff, **counts, "frames": [dict(row) for row in rows]}
 
     def select_frames(self, frame_ids, excluded):
+        self.ensure_available()
         ids = list(set(frame_ids))
         marks = ",".join("?" for _ in ids)
         with self.store.connect() as db:
@@ -260,7 +270,35 @@ class Recorder:
             db.execute(f"UPDATE frames SET excluded=? WHERE id IN ({marks})", [int(excluded), *ids])
         self.store.event("info", f"{len(ids)} frame(s) {'removed from' if excluded else 'restored to'} future videos")
 
+    def cleanup_deleted_frames(self):
+        for row in self.store.rows("SELECT id FROM deleted_frames"):
+            frame_id = row["id"]
+            if not re.fullmatch(r"[0-9a-f]{32}", frame_id):
+                raise RuntimeError("Invalid photo ID in deletion queue")
+            for kind in ("frames", "thumbs"):
+                (self.root / kind / f"{frame_id}.jpg").unlink(missing_ok=True)
+            with self.store.connect() as db:
+                db.execute("DELETE FROM deleted_frames WHERE id=?", (frame_id,))
+
+    async def delete_frame(self, frame_id):
+        # Serialize with captures; exports must keep their queued frame snapshots.
+        async with self.camera_lock:
+            self.ensure_available()
+            if self.store.rows("SELECT id FROM exports WHERE status IN ('queued','running') LIMIT 1"):
+                raise ValueError("Wait for the current video export to finish before deleting photos")
+            with self.store.connect() as db:
+                db.execute("BEGIN IMMEDIATE")
+                if not db.execute("SELECT id FROM frames WHERE id=?", (frame_id,)).fetchone():
+                    raise KeyError(frame_id)
+                db.execute("INSERT INTO deleted_frames VALUES (?)", (frame_id,))
+                db.execute("DELETE FROM export_frames WHERE frame_id=?", (frame_id,))
+                db.execute("DELETE FROM frames WHERE id=?", (frame_id,))
+            # Commit the cleanup intent first so a restart finishes interrupted deletes.
+            self.cleanup_deleted_frames()
+            self.store.event("info", "Photo permanently deleted")
+
     async def create_export(self, cutoff=None):
+        self.ensure_available()
         # No await between checking and registering the task: requests cannot overlap here.
         if self.export_task and not self.export_task.done():
             raise ValueError("An export is already running")

@@ -21,6 +21,10 @@ The Projects page shows every project's recording status. Started projects have 
 
 Multiple projects can run at once, including projects sharing a camera. Camera operations are serialized across projects, so scheduled captures wait their turn. A manual preview/capture may report that the camera is busy; try again after the current shot. At large project counts, the time spent warming up cameras can delay captures.
 
+In **Photos** or **Recent photos**, click **Delete photo** and confirm to permanently remove that photo's original and thumbnail from the app. Counts, storage totals, the latest photo and future video exports update accordingly. Existing exported videos and copies on the camera's card are retained. Wait for any queued or running video export in that project to finish before deleting individual photos. **Remove this frame** in Videos remains reversible and only excludes a photo from future exports.
+
+Click **Delete project** on a project card or beside its recording button and confirm to permanently remove its photos, thumbnails, videos, settings and activity history. Deletion stops the project's scheduler and exports and waits for an in-progress capture to finish before removing files. Other projects continue running. You can delete the original project or every project; deleted projects do not reappear after restart. Interrupted file cleanup resumes when the app next starts. Deletion cannot be undone and does not delete copies on a camera's card.
+
 ## Canon Rebel T7i / EOS 800D over USB
 
 The app supports DSLR still photography through gPhoto2 on Linux. The [gPhoto2 camera list](https://gphoto.sourceforge.io/proj/libgphoto2/support.php) lists the Canon EOS Rebel T7i (also named EOS 800D) with image capture support. No virtual webcam or HDMI capture adapter is needed. Full-resolution 6000 × 4000 JPEG capture has been verified on the connected T7i; test your own camera setup before a long recording.

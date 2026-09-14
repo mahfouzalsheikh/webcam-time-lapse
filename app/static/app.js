@@ -11,6 +11,7 @@ let editingKey = null,
   refreshing = false,
   routeVersion = 0;
 let latestKey, previewUrl, testUrl, noticeTimer;
+const deletingProjectIds = new Set();
 const numeric = [
   "interval_minutes",
   "duration_days",
@@ -160,6 +161,7 @@ function route() {
 window.addEventListener("hashchange", route);
 
 function renderProjects() {
+  if (!currentId) document.title = "Grow · Plant time-lapse";
   $("connection").textContent = demo
     ? "● Connected · demo camera"
     : "● Recorder online";
@@ -219,10 +221,17 @@ function renderProjects() {
     }
     const open = el("a", "Open project", "outline");
     open.href = href;
-    body.append(open);
+    const actions = el("div", undefined, "button-row");
+    const remove = el("button", "Delete project", "outline danger");
+    remove.setAttribute("aria-label", `Delete project ${p.settings.name}`);
+    remove.onclick = () => deleteProject(p, remove);
+    actions.append(open, remove);
+    body.append(actions);
     card.append(cover, body);
     $("project-grid").append(card);
   }
+  if (!projects.length)
+    $("project-grid").append(el("div", "No projects yet. Create a project to start recording.", "empty"));
 }
 function renderProject(p) {
   const s = p.settings,
@@ -308,7 +317,8 @@ function renderPhotos(target, photos, id) {
     return;
   }
   for (const photo of photos) {
-    const a = el("a", undefined, "photo-card");
+    const card = el("article", undefined, "photo-card");
+    const a = el("a");
     a.href = media(id, "frames", `${photo.id}.jpg`);
     a.target = "_blank";
     a.rel = "noopener";
@@ -317,9 +327,49 @@ function renderPhotos(target, photos, id) {
     img.alt = `Photo taken ${date(photo.captured_at)}`;
     img.loading = "lazy";
     a.append(img, el("span", date(photo.captured_at)));
-    target.append(a);
+    const remove = el("button", "Delete photo", "outline danger");
+    remove.setAttribute("aria-label", `Delete photo taken ${date(photo.captured_at)}`);
+    remove.onclick = () => {
+      if (!confirm(`Permanently delete the photo taken ${date(photo.captured_at)}?\n\nIts original and thumbnail will be deleted from this project. Existing exported videos and camera-card copies are kept. This cannot be undone.`)) return;
+      action(remove, async () => {
+        await api(endpoint(id, `frames/${photo.id}`), "DELETE");
+        if (currentId === id) {
+          routeVersion++;
+          latestKey = undefined;
+          resetTimeline();
+        }
+        notify("Photo permanently deleted.");
+      });
+    };
+    card.append(a, remove);
+    target.append(card);
   }
 }
+async function deleteProject(p, button) {
+  if (!confirm(`Permanently delete “${p.settings.name}” and all its resources?\n\nThis stops recording and exports, and deletes ${p.frames.count.toLocaleString()} ${p.frames.count === 1 ? "photo" : "photos"}, all thumbnails, exported videos, and project settings. Camera-card copies are kept. This cannot be undone.`)) return;
+  deletingProjectIds.add(p.id);
+  routeVersion++;
+  await action(button, async () => {
+    try {
+      await api(`projects/${encodeURIComponent(p.id)}`, "DELETE");
+      projects = projects.filter((item) => item.id !== p.id);
+      if (currentId === p.id) {
+        resetTimeline();
+        dirty = false;
+        currentId = null;
+        location.hash = "projects";
+      }
+      renderProjects();
+      notify("Project and all its photos and videos deleted.");
+    } finally {
+      deletingProjectIds.delete(p.id);
+    }
+  });
+}
+$("delete-project").onclick = (event) => {
+  const p = project();
+  if (p) deleteProject(p, event.currentTarget);
+};
 function renderExports(jobs, id) {
   $("export-list").replaceChildren();
   exportBusy = jobs.some((j) => ["queued", "running"].includes(j.status));
@@ -478,7 +528,7 @@ function updateEstimate() {
     `Estimated result: ${count.toLocaleString()} photos → ${(count / s.export_fps).toFixed(0)} seconds of video. Approximately ${bytes(count * average)} for original photos, plus thumbnails and videos.`;
 }
 async function refresh() {
-  if (refreshing) return;
+  if (refreshing || deletingProjectIds.has(currentId)) return;
   refreshing = true;
   const version = routeVersion,
     id = currentId,
@@ -539,6 +589,7 @@ async function refresh() {
       if (!events.length)
         $("events").append(el("div", "No activity yet.", "event"));
     } else if (id && selectedTab === "photos") {
+      photoPage = Math.min(photoPage, Math.max(0, Math.ceil(p.frames.count / 24) - 1));
       const photos = await api(
         endpoint(id, `frames?limit=24&offset=${photoPage * 24}`),
       );

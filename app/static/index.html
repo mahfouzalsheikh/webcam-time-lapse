@@ -65,7 +65,10 @@
             </div>
             <p id="project-subtitle"></p>
           </div>
-          <button id="record-button" class="primary">Start recording</button>
+          <div class="button-row">
+            <button id="record-button" class="primary">Start recording</button>
+            <button id="delete-project" class="outline danger">Delete project</button>
+          </div>
         </div>
         <nav class="tabs" aria-label="Project sections">
           <button data-tab="overview">Overview</button
@@ -142,7 +145,7 @@
           <div class="section-heading">
             <div>
               <h2>Project photos</h2>
-              <p>Open a photo to view the original. All photos are kept.</p>
+              <p>Open a photo to view the original. Deleting a photo permanently removes its original and thumbnail from this project.</p>
             </div>
           </div>
           <div id="all-photos" class="photo-grid"></div>
@@ -158,7 +161,7 @@
               <h2>Time-lapse videos</h2>
               <p>
                 Preview your time-lapse, remove unwanted frames, then export an MP4.
-                Your original photos are always kept.
+                Removing frames from a video keeps the original photos. To permanently delete a photo, use the Photos tab.
               </p>
             </div>
             <button id="export-button" class="primary" disabled>Export final video</button>

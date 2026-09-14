@@ -8,7 +8,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from . import camera
-from .models import CameraDevice, ExportRequest, FrameSelection, PreviewRequest, Settings
+from .models import CameraDevice, ExportRequest, FrameId, FrameSelection, PreviewRequest, Settings
 from .service import Recorder
 from .projects import Projects
 
@@ -29,7 +29,7 @@ def create_app(data_dir=None, demo=None):
     app.state.projects = projects
     app.state.recorder = projects.get("default")  # Compatibility with the original single-project API.
 
-    def get_recorder(project_id: str = "default"):
+    async def get_recorder(project_id: str = "default"):
         recorder = projects.get(project_id)
         if recorder is None:
             raise HTTPException(404, "Project not found")
@@ -64,7 +64,7 @@ def create_app(data_dir=None, demo=None):
 
     @app.get("/health")
     async def health():
-        if not projects.active or any(rec.scheduler_task.done() for rec in projects.recorders.values()):
+        if not projects.active or any(rec.scheduler_task.done() for rec in projects.recorders.values() if not rec.deleting):
             raise HTTPException(503, "Recorder is not running")
         return {"status": "ok"}
 
@@ -75,6 +75,16 @@ def create_app(data_dir=None, demo=None):
     @app.post("/api/projects", status_code=201)
     async def create_project(settings: Settings):
         return await projects.create(settings)
+
+    @app.delete("/api/projects/{project_id}")
+    async def delete_project(project_id: str):
+        try:
+            await projects.delete(project_id)
+        except KeyError:
+            raise HTTPException(404, "Project not found")
+        except OSError:
+            raise HTTPException(503, "Project deletion could not finish. Check storage permissions and restart the app to retry pending file cleanup.")
+        return {"deleted": project_id}
 
     @app.get("/api/defaults")
     async def defaults():
@@ -124,13 +134,23 @@ def create_app(data_dir=None, demo=None):
         return recorder.store.rows("SELECT * FROM frames ORDER BY captured_at DESC LIMIT ? OFFSET ?", (limit, offset))
 
     @router.get("/timeline")
-    def timeline(cutoff: float | None = Query(None, ge=0, allow_inf_nan=False), limit: int = Query(24, ge=1, le=100), offset: int = Query(0, ge=0), included_only: bool = False, recorder: Recorder = Depends(get_recorder)):
+    async def timeline(cutoff: float | None = Query(None, ge=0, allow_inf_nan=False), limit: int = Query(24, ge=1, le=100), offset: int = Query(0, ge=0), included_only: bool = False, recorder: Recorder = Depends(get_recorder)):
         return recorder.timeline(cutoff, offset, limit, included_only)
 
     @router.patch("/frames/selection")
-    def selection(request: FrameSelection, recorder: Recorder = Depends(get_recorder)):
+    async def selection(request: FrameSelection, recorder: Recorder = Depends(get_recorder)):
         recorder.select_frames(request.frame_ids, request.excluded)
         return {"updated": len(set(request.frame_ids)), "excluded": request.excluded}
+
+    @router.delete("/frames/{frame_id}")
+    async def delete_frame(frame_id: FrameId, recorder: Recorder = Depends(get_recorder)):
+        try:
+            await recorder.delete_frame(frame_id)
+        except KeyError:
+            raise HTTPException(404, "Photo not found in this project")
+        except OSError:
+            raise HTTPException(503, "Photo removed from the project, but file cleanup could not finish. Check storage permissions and restart the app to retry cleanup.")
+        return {"deleted": frame_id}
 
     @router.get("/events")
     async def events(recorder: Recorder = Depends(get_recorder)):

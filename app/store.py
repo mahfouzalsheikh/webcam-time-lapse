@@ -19,6 +19,7 @@ class Store:
                 CREATE TABLE IF NOT EXISTS frames (
                     id TEXT PRIMARY KEY, captured_at REAL NOT NULL, bytes INTEGER NOT NULL);
                 CREATE INDEX IF NOT EXISTS frames_time ON frames(captured_at);
+                CREATE TABLE IF NOT EXISTS deleted_frames (id TEXT PRIMARY KEY);
                 CREATE TABLE IF NOT EXISTS events (
                     id INTEGER PRIMARY KEY, created_at REAL NOT NULL, level TEXT NOT NULL, message TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS exports (

@@ -491,6 +491,10 @@ dd {
   font-size: 15px;
   color: var(--muted);
 }
+.photo-card a { text-decoration: none; }
+.photo-card .danger { margin: 0 10px 10px; }
+button.danger { color: #a12828; border-color: #d6a4a4; background: #fff; }
+button.danger:hover { background: #fff0f0; border-color: #a12828; }
 .empty {
   grid-column: 1/-1;
   text-align: center;
