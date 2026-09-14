@@ -229,6 +229,8 @@ function renderProject(p) {
     r = p.runtime,
     [label, cls] = status(p);
   document.title = `${s.name} · Grow`;
+  $("preview-button").textContent = isDslr(s.camera_device) ? "Take test photo" : "Preview camera";
+  $("preview-button").title = isDslr(s.camera_device) ? "Fires the DSLR shutter; not added to project photos. A copy may remain on the camera card." : "";
   $("project-title").textContent = s.name;
   $("project-status").textContent = label;
   $("project-status").className = `badge ${cls}`;
@@ -290,7 +292,7 @@ function renderProject(p) {
     $("image-title").textContent = "Latest photo";
     $("image-time").textContent = p.latest ? date(p.latest.captured_at, p) : "";
     $("preview-note").textContent =
-      "Preview checks the camera without saving a photo.";
+      isDslr(s.camera_device) ? "Test takes a real photo; it is not added to this project. A copy may remain on the camera card." : "Preview checks the camera without saving a photo.";
   }
 }
 function renderPhotos(target, photos, id) {
@@ -422,18 +424,32 @@ function renderCameraOptions(selected = $("camera-device").value) {
   select.value = match?.id || selected || cameras[0]?.id || "";
   updateCameraHelp();
 }
+function isDslr(device) {
+  return !demo && device?.startsWith("gphoto2:");
+}
 function updateCameraHelp() {
   const c = cameras.find((c) => c.id === $("camera-device").value);
+  const dslr = isDslr($("camera-device").value);
+  for (const id of ["autofocus-field", "focus-settle-field", "focus-settle-help", "camera-format-field", "camera-warmup-field"])
+    $(id).hidden = dslr;
+  $("resolution-label").textContent = dslr ? "Video export resolution" : "Photo resolution";
+  $("detect-resolution").textContent = dslr ? "Use Full HD video" : "Use largest resolution";
+  $("test-camera").textContent = dslr ? "Take test photo" : "Test camera";
+  $("test-note").textContent = dslr ? "Test photo is not added to this project. A copy may remain on the camera card." : "Preview only — this photo is not saved.";
   $("test-camera").disabled = !c?.available;
   $("camera-help").textContent = demo
     ? "Demo mode: previews use a synthetic plant image."
     : !cameras.length
-      ? "No webcams found. Connect a USB camera and click Refresh cameras."
+      ? "No cameras found. Connect a USB camera and click Refresh cameras. For a DSLR, check gphoto2 installation and USB permissions (see README)."
       : !c
-        ? "The saved webcam is disconnected. Reconnect it or select another camera."
+        ? $("camera-device").value.startsWith("gphoto2:serial:")
+          ? "The saved camera is disconnected. Reconnect the same camera and turn it on; running projects retry automatically."
+          : "The saved camera is disconnected. Reconnect it, refresh, and reselect it if its USB address changed."
         : c.error
           ? `Camera unavailable: ${c.error}`
-          : "Test the camera to check the angle and resolution. Save settings to use it for this project.";
+          : dslr
+            ? `USB DSLR: select JPEG quality on the camera. Tests fire the shutter. Full-resolution JPEGs are downloaded; copies on the camera card are kept, so monitor card space. ${c.id.startsWith("gphoto2:serial:") ? "Save settings to remember this camera across reconnects." : "This camera has no unique readable USB serial; reselect it if its USB address changes."}`
+            : "Test the camera to check the angle and resolution. Save settings to use it for this project.";
 }
 function formSettings() {
   const form = $("settings-form"),
@@ -457,7 +473,7 @@ function updateEstimate() {
     : 1440;
   const count = Math.ceil(daily / s.interval_minutes) * s.duration_days;
   const p = project(),
-    average = p?.frames.count ? p.frames.bytes / p.frames.count : 350000;
+    average = p?.frames.count ? p.frames.bytes / p.frames.count : isDslr(s.camera_device) ? 10000000 : 350000;
   $("estimate").textContent =
     `Estimated result: ${count.toLocaleString()} photos → ${(count / s.export_fps).toFixed(0)} seconds of video. Approximately ${bytes(count * average)} for original photos, plus thumbnails and videos.`;
 }
@@ -575,7 +591,7 @@ $("preview-button").onclick = (event) => {
     $("image-title").textContent = "Camera preview";
     $("image-time").textContent = "Not saved";
     $("preview-note").textContent =
-      "This is a test preview. Your saved photos are unchanged.";
+      isDslr(project()?.settings.camera_device) ? "Test photo is not added to this project. A copy may remain on the camera card." : "This is a test preview. Your saved photos are unchanged.";
   });
 };
 $("export-button").onclick = (event) => {
@@ -675,7 +691,7 @@ async function detectResolution(apply) {
       const value = `${mode.width}x${mode.height}`;
       if (sizes.has(value)) continue;
       sizes.add(value);
-      $("resolution").add(new Option(`${mode.width} × ${mode.height}${sizes.size === 1 ? " (largest)" : ""}`, value));
+      $("resolution").add(new Option(`${mode.width} × ${mode.height}${sizes.size === 1 && result.resolution_scope !== "export" ? " (largest)" : ""}`, value));
     }
     if (!apply && !sizes.has(previous)) $("resolution").add(new Option(`${previous.replace("x", " × ")} (saved)`, previous));
     const best = result.recommended;
@@ -686,7 +702,9 @@ async function detectResolution(apply) {
       $("save-message").textContent = "Camera settings updated. Save to apply.";
       updateEstimate();
     }
-    $("resolution-help").textContent = `${apply ? "Selected" : "Largest available:"} ${best.width} × ${best.height} (${best.input_format.toUpperCase()}). Photos and exported videos use the selected resolution.${apply ? " Save settings to apply." : " Your saved resolution is unchanged."}`;
+    $("resolution-help").textContent = result.resolution_scope === "export"
+      ? "Original JPEGs keep the size and quality chosen on the camera. This setting controls MP4 output only; photos are fitted with padding to preserve their shape. Save settings to apply."
+      : `${apply ? "Selected" : "Largest available:"} ${best.width} × ${best.height} (${best.input_format.toUpperCase()}). Photos and exported videos use the selected resolution.${apply ? " Save settings to apply." : " Your saved resolution is unchanged."}`;
   } catch (error) {
     if (request === cameraRequest && version === routeVersion) $("resolution-help").textContent = error.message;
   } finally {
@@ -704,6 +722,8 @@ async function checkFocus(device, version, request) {
     if (version !== routeVersion || request !== cameraRequest) return;
     $("focus-help").textContent = focus.demo
       ? "Demo image: there is no physical lens to focus."
+      : focus.backend === "gphoto2"
+        ? "Set focus and exposure on the camera and lens. The app does not change DSLR focus, image quality or exposure settings. For fixed framing, focus once and switch the lens to MF."
       : focus.autofocus
         ? "Autofocus supported. When enabled, the app restarts autofocus before each photo and preview, then gives the lens time to settle."
         : focus.single_shot
@@ -717,7 +737,9 @@ $("detect-resolution").onclick = () => detectResolution(true);
 $("resolution").onchange = () => {
   const mode = detectedModes.find((m) => `${m.width}x${m.height}` === $("resolution").value);
   if (mode) setCameraFormat(mode.input_format);
-  $("resolution-help").textContent = "Photos and exported videos will use this resolution. Save settings to apply.";
+  $("resolution-help").textContent = isDslr($("camera-device").value)
+    ? "Exported videos will use this resolution. Original JPEGs keep the camera's resolution. Save settings to apply."
+    : "Photos and exported videos will use this resolution. Save settings to apply.";
 };
 
 let timeline = null, timelinePage = 0, timelineLoading = false, timelineRequest = 0;

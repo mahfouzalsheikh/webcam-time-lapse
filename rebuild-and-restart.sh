@@ -32,6 +32,14 @@ if [[ "$COMPOSE_FILE" -ef compose.yaml ]]; then
         camera_paths+=("$device")
         camera_groups["$(stat -Lc '%g' "$device")"]=1
     done
+    # DSLR USB nodes can use plugdev or another host permission group.
+    # Do not add group 0; use the documented video-group udev rule instead.
+    for device in /dev/bus/usb/[0-9][0-9][0-9]/[0-9][0-9][0-9]; do
+        [[ -c "$device" ]] || continue
+        [[ "$(stat -Lc '%t' "$device")" == "bd" ]] || continue  # USB major 189
+        usb_group=$(stat -Lc '%g' "$device")
+        if [[ "$usb_group" != "0" ]]; then camera_groups["$usb_group"]=1; fi
+    done
     {
         printf '%s\nservices:\n  grow:\n' "$marker"
         if (( ${#camera_groups[@]} )); then
@@ -44,7 +52,7 @@ if [[ "$COMPOSE_FILE" -ef compose.yaml ]]; then
         fi
     } > "$temporary"
     mv -- "$temporary" "$override"
-    echo "Detected ${#camera_paths[@]} video paths. Cameras can be connected after startup."
+    echo "Detected ${#camera_paths[@]} video paths; USB permission groups included for DSLRs. Cameras can be connected after startup."
     compose+=(-f "$override")
 fi
 

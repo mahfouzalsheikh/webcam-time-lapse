@@ -4,7 +4,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-CameraDevice = Annotated[str, Field(pattern=r"^/dev/(video[0-9]+|v4l/by-id/[A-Za-z0-9_.+-]+)$", max_length=255)]
+CameraDevice = Annotated[str, Field(pattern=r"^(/dev/(video[0-9]+|v4l/by-id/[A-Za-z0-9_.+-]+)|gphoto2:(usb:[0-9]{3},[0-9]{3}|serial:[0-9a-f]{64}))$", max_length=255)]
 FrameId = Annotated[str, Field(pattern=r"^[0-9a-f]{32}$")]
 
 class Settings(BaseModel):

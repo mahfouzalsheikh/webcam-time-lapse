@@ -5,11 +5,19 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import pytest
 from fastapi.testclient import TestClient
 from PIL import Image
 
 from app import camera
 from app.main import create_app
+
+
+@pytest.fixture(autouse=True)
+def isolate_webcam_tests():
+    # Connected DSLR hardware must not change these webcam-only inventories.
+    with patch('app.camera.dslr.list_devices', return_value=[]):
+        yield
 
 
 def test_camera_selection_persists_and_test_preview_does_not_change_it(tmp_path):

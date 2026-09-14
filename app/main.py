@@ -99,7 +99,7 @@ def create_app(data_dir=None, demo=None):
     @router.put("/settings")
     async def settings(settings: Settings, recorder: Recorder = Depends(get_recorder)):
         await recorder.save_settings(settings)
-        return settings
+        return recorder.settings()
 
     @router.post("/start")
     async def start(recorder: Recorder = Depends(get_recorder)):

@@ -13,6 +13,7 @@ from pathlib import Path
 from PIL import Image, ImageDraw
 
 from .models import Settings
+from . import dslr
 
 
 def device_path(logical: str):
@@ -74,7 +75,7 @@ def list_devices(demo=False):
         seen.add(device_number)
         devices.append({"id": logical, "name": name, "available": available, "error": error,
                         "aliases": sorted(set(aliases))})
-    return devices
+    return devices + dslr.list_devices()
 
 
 PIXEL_FORMATS = {
@@ -108,6 +109,8 @@ def capabilities(logical: str, demo=False):
     if demo:
         modes = [{"width": w, "height": h, "input_format": "mjpeg"} for w, h in [(1920,1080), (1280,720), (640,480)]]
         return {"device": logical, "modes": modes, "recommended": modes[0]}
+    if dslr.is_dslr(logical):
+        return dslr.capabilities(logical)
     path = device_path(logical)
     try:
         if not probe_device(path)["capture"]:
@@ -171,6 +174,9 @@ def focus_control(fd, control_id):
 def focus_capabilities(logical, demo=False):
     if demo:
         return {"autofocus": False, "single_shot": False, "manual": False, "demo": True}
+    if dslr.is_dslr(logical):
+        return {"autofocus": False, "single_shot": False, "manual": False,
+                "demo": False, "backend": "gphoto2"}
     try:
         if not probe_device(device_path(logical))["capture"]:
             raise OSError("This device does not support video capture")
@@ -246,6 +252,9 @@ def capture(path: Path, settings: Settings, demo: bool):
                           cx if flip < 0 else cx + w * .16, cy + h * .02), fill="#507747")
         draw.text((20, 20), "DEMO CAMERA / " + time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime()), fill="#35513c")
         image.save(path, "JPEG", quality=92)
+        return
+    if dslr.is_dslr(settings.camera_device):
+        dslr.capture(path, settings)
         return
     try:
         info = probe_device(device_path(settings.camera_device))

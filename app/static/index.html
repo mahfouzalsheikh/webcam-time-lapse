@@ -294,7 +294,7 @@
               <section class="card form-card">
                 <h2>2. Camera</h2>
                 <label
-                  >Webcam<select
+                  >Camera<select
                     name="camera_device"
                     id="camera-device"
                     required
@@ -316,12 +316,12 @@
                 <p id="test-note" class="help" hidden>
                   Preview only — this photo is not saved.
                 </p>
-                <label class="check"><input type="checkbox" name="autofocus" id="autofocus" /> Autofocus before each photo</label>
+                <label class="check" id="autofocus-field"><input type="checkbox" name="autofocus" id="autofocus" /> Autofocus before each photo</label>
                 <p id="focus-help" class="help" role="status">Checking camera focus support…</p>
-                <label>Focus settling time (seconds)<input name="focus_settle_seconds" type="number" min="1" max="15" required /></label>
-                <p class="help">On supported cameras, autofocus runs while the camera streams for at least this long before saving a photo. Increase the time if the lens is still adjusting. Focus is not guaranteed; use Test camera to check. When off, camera focus is left unchanged.</p>
+                <label id="focus-settle-field">Focus settling time (seconds)<input name="focus_settle_seconds" type="number" min="1" max="15" required /></label>
+                <p class="help" id="focus-settle-help">On supported cameras, autofocus runs while the camera streams for at least this long before saving a photo. Increase the time if the lens is still adjusting. Focus is not guaranteed; use Test camera to check. When off, camera focus is left unchanged.</p>
                 <label
-                  >Photo resolution<select id="resolution">
+                  ><span id="resolution-label">Photo resolution</span><select id="resolution">
                     <option value="640x480">640 × 480</option>
                     <option value="1280x720">1280 × 720 (HD)</option>
                     <option value="1920x1080">1920 × 1080 (Full HD)</option>
@@ -340,13 +340,13 @@
               </summary>
               <div class="advanced-fields">
                 <label
-                  >Camera format<select name="input_format">
+                  id="camera-format-field">Camera format<select name="input_format">
                     <option value="auto">Automatic</option>
                     <option value="mjpeg">MJPEG</option>
                     <option value="yuyv422">YUYV 4:2:2</option>
                   </select></label
                 ><label
-                  >Camera warm-up (seconds)<input
+                  id="camera-warmup-field">Camera warm-up (seconds)<input
                     name="warmup_seconds"
                     type="number"
                     min="0"

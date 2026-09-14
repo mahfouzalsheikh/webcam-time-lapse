@@ -177,6 +177,7 @@ def test_interrupted_export_resumes_with_original_snapshot_and_settings(tmp_path
 
 
 def test_hotplug_discovery_reads_current_host_device_directory(tmp_path, monkeypatch):
+    monkeypatch.setattr(camera.dslr, 'list_devices', lambda: [])
     monkeypatch.setenv('CAMERA_DEVICE_ROOT', str(tmp_path))
     assert camera.list_devices() == []
     (tmp_path / 'video0').touch()

@@ -3,7 +3,7 @@ services:
     build: .
     init: true
     restart: unless-stopped
-    stop_grace_period: 45s
+    stop_grace_period: 120s
     ports:
       - "${BIND_ADDRESS:-127.0.0.1}:${PORT:-8091}:8000"
     environment:

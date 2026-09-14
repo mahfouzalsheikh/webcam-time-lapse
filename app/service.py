@@ -12,9 +12,9 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from PIL import Image
+from PIL import Image, ImageOps
 
-from . import camera
+from . import camera, dslr
 from .models import Settings
 from .store import Store
 
@@ -99,6 +99,8 @@ class Recorder:
             self.owner.close()
 
     async def save_settings(self, settings):
+        if not self.demo:
+            settings = settings.model_copy(update={"camera_device": dslr.stable_device(settings.camera_device)})
         async with self.state_lock:
             state = self.store.get("runtime")
             if state["started_at"]:
@@ -136,7 +138,7 @@ class Recorder:
             camera.capture(temp, settings, self.demo)
             if not save:
                 return temp.read_bytes()
-            with Image.open(temp) as image:
+            with Image.open(temp) as source, ImageOps.exif_transpose(source) as image:
                 image.thumbnail((480, 320))
                 image.convert("RGB").save(thumbnail, "JPEG", quality=80)
             # Publish the complete image before committing its database record.
@@ -164,6 +166,9 @@ class Recorder:
             raise ValueError("Camera is busy. Try again in a moment.")
         async with self.camera_lock:
             settings = preview_settings if not save and preview_settings is not None else self.settings()
+            original_device = settings.camera_device
+            if not self.demo:
+                settings = settings.model_copy(update={"camera_device": dslr.stable_device(original_device)})
             if scheduled:
                 state = self.store.get("runtime")
                 now = time.time()
@@ -187,6 +192,10 @@ class Recorder:
                 raise RuntimeError(str(exc)) from exc
             if save:
                 async with self.state_lock:
+                    current = self.settings()
+                    if current.camera_device == original_device and settings.camera_device != original_device:
+                        current.camera_device = settings.camera_device
+                        self.store.put("settings", current.model_dump())
                     state = self.store.get("runtime")
                     state["last_error"] = None
                     self.store.put("runtime", state)
