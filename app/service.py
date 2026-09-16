@@ -14,7 +14,7 @@ from zoneinfo import ZoneInfo
 
 from PIL import Image, ImageOps
 
-from . import camera, dslr
+from . import camera, dslr, lighting
 from .models import Settings
 from .store import Store
 
@@ -71,6 +71,9 @@ class Recorder:
             raise RuntimeError("This data directory already has a recorder. Run exactly one worker.")
         # A killed process can leave temporary images or half-rendered videos behind.
         self.cleanup_deleted_frames()
+        for path in (self.root / "exports").iterdir():
+            if path.is_dir() and re.fullmatch(r"\.[0-9a-f]{32}\.lighting", path.name):
+                shutil.rmtree(path)
         for folder, pattern in (("frames", r"\.[0-9a-f]{32}\.jpg"),
                                 ("exports", r"\.?[0-9a-f]{32}\.(txt|log)|\.[0-9a-f]{32}\.mp4")):
             for path in (self.root / folder).iterdir():
@@ -297,7 +300,7 @@ class Recorder:
             self.cleanup_deleted_frames()
             self.store.event("info", "Photo permanently deleted")
 
-    async def create_export(self, cutoff=None):
+    async def create_export(self, cutoff=None, normalize_lighting=False):
         self.ensure_available()
         # No await between checking and registering the task: requests cannot overlap here.
         if self.export_task and not self.export_task.done():
@@ -310,8 +313,8 @@ class Recorder:
             count = db.execute("SELECT COUNT(*) FROM frames WHERE captured_at<=? AND excluded=0", (cutoff,)).fetchone()[0]
             if not count:
                 raise ValueError("No frames are included in this video. Capture a photo or restore a removed frame.")
-            job = {"id": uuid.uuid4().hex, "created_at": time.time(), "status": "queued", "frames": count, "fps": settings.export_fps, "error": None}
-            db.execute("INSERT INTO exports(id,created_at,status,frames,fps,error,settings,snapshot) VALUES (:id,:created_at,:status,:frames,:fps,:error,:settings,1)", {**job, "settings": settings.model_dump_json()})
+            job = {"id": uuid.uuid4().hex, "created_at": time.time(), "status": "queued", "frames": count, "fps": settings.export_fps, "error": None, "normalize_lighting": normalize_lighting}
+            db.execute("INSERT INTO exports(id,created_at,status,frames,fps,error,settings,snapshot,normalize_lighting) VALUES (:id,:created_at,:status,:frames,:fps,:error,:settings,1,:normalize_lighting)", {**job, "settings": settings.model_dump_json()})
             db.execute("INSERT INTO export_frames SELECT ?,id FROM frames WHERE captured_at<=? AND excluded=0", (job["id"], cutoff))
         self.export_task = asyncio.create_task(self.run_exports())
         return job
@@ -343,12 +346,28 @@ class Recorder:
         temp = directory / f".{job['id']}.mp4"
         log = directory / f".{job['id']}.log"
         final = directory / f"{job['id']}.mp4"
+        corrected = directory / f".{job['id']}.lighting"
+        deadline = time.monotonic() + 21600
+
+        def check_export():
+            if self.stopping.is_set():
+                raise InterruptedError("Export will resume after restart")
+            self.check_space()
+            if time.monotonic() >= deadline:
+                raise RuntimeError("Export exceeded the six-hour time limit")
+
         try:
-            with manifest.open("w") as handle, self.store.connect() as db:
-                query = "SELECT f.id FROM export_frames e JOIN frames f ON f.id=e.frame_id WHERE e.export_id=? ORDER BY f.captured_at,f.id" if job.get("snapshot") else "SELECT id FROM frames WHERE captured_at<=? ORDER BY captured_at,id"
-                for row in db.execute(query, (job["id"] if job.get("snapshot") else job["created_at"],)):
+            query = "SELECT f.id FROM export_frames e JOIN frames f ON f.id=e.frame_id WHERE e.export_id=? ORDER BY f.captured_at,f.id" if job.get("snapshot") else "SELECT id FROM frames WHERE captured_at<=? ORDER BY captured_at,id"
+            rows = self.store.rows(query, (job["id"] if job.get("snapshot") else job["created_at"],))
+            if job.get("normalize_lighting"):
+                corrected.mkdir()
+                lighting.prepare_frames([self.root / "frames" / f"{row['id']}.jpg" for row in rows],
+                                        corrected, (settings.width, settings.height), check_export)
+            with manifest.open("w") as handle:
+                for row in rows:
                     # Relative paths contain only internally generated hex IDs.
-                    handle.write(f"file '../frames/{row['id']}.jpg'\n")
+                    path = f"{corrected.name}/{row['id']}.png" if job.get("normalize_lighting") else f"../frames/{row['id']}.jpg"
+                    handle.write(f"file '{path}'\n")
             command = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
                        "-r", str(job["fps"]), "-f", "concat", "-safe", "0", "-i", str(manifest),
                        "-vf", f"scale={settings.width}:{settings.height}:force_original_aspect_ratio=decrease,pad={settings.width}:{settings.height}:(ow-iw)/2:(oh-ih)/2,setsar=1",
@@ -356,14 +375,9 @@ class Recorder:
                        "-movflags", "+faststart", str(temp)]
             # Keep FFmpeg errors out of RAM and check the disk reserve during long exports.
             with log.open("wb") as errors, subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=errors) as process:
-                deadline = time.monotonic() + 21600
                 try:
                     while process.poll() is None:
-                        if self.stopping.is_set():
-                            raise InterruptedError("Export will resume after restart")
-                        self.check_space()
-                        if time.monotonic() >= deadline:
-                            raise RuntimeError("Export exceeded the six-hour time limit")
+                        check_export()
                         time.sleep(.5)
                 except BaseException:
                     process.kill()
@@ -386,3 +400,5 @@ class Recorder:
             manifest.unlink(missing_ok=True)
             temp.unlink(missing_ok=True)
             log.unlink(missing_ok=True)
+            if corrected.exists():
+                shutil.rmtree(corrected)

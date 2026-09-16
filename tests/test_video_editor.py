@@ -58,7 +58,8 @@ def test_empty_selection_and_invalid_timeline_requests(tmp_path):
 
 
 @pytest.mark.skipif(not shutil.which('ffmpeg'), reason='FFmpeg required')
-def test_export_keeps_reviewed_frames_and_settings_across_restart(tmp_path):
+@pytest.mark.parametrize('normalize_lighting', [False, True])
+def test_export_keeps_reviewed_frames_and_settings_across_restart(tmp_path, normalize_lighting):
     async def scenario():
         rec = Recorder(tmp_path, True)
         await rec.save_settings(Settings(width=640, height=480, export_fps=2))
@@ -68,7 +69,7 @@ def test_export_keeps_reviewed_frames_and_settings_across_restart(tmp_path):
         rec.select_frames([ids[1]], True)
         # Queue behind another export, then interrupt before FFmpeg starts.
         await rec.export_gate.acquire()
-        job = await rec.create_export(cutoff)
+        job = await rec.create_export(cutoff, normalize_lighting=normalize_lighting)
         rec.select_frames([ids[1]], False)
         rec.select_frames([ids[0]], True)
         await rec.save_settings(Settings(width=1280, height=720, export_fps=30))
@@ -81,12 +82,17 @@ def test_export_keeps_reviewed_frames_and_settings_across_restart(tmp_path):
         rec.export_gate.release()
         with rec.store.connect() as db:
             db.execute("UPDATE exports SET status='running' WHERE id=?", (job['id'],))
+        stale = tmp_path / 'exports' / f".{job['id']}.lighting"
+        stale.mkdir()
+        (stale / 'partial.png').write_bytes(b'interrupted')
         resumed = Recorder(tmp_path, True)
         await resumed.start()
         try:
             await resumed.export_task
             result = resumed.store.rows('SELECT * FROM exports')[0]
             assert result['status'] == 'complete', result['error']
+            assert bool(result['normalize_lighting']) == normalize_lighting
+            assert not stale.exists()
             probe = subprocess.run(['ffprobe', '-v', 'error', '-show_streams', '-of', 'json', str(tmp_path / 'exports' / f"{job['id']}.mp4")], capture_output=True, check=True)
             stream = json.loads(probe.stdout)['streams'][0]
             assert (stream['width'], stream['height']) == (640, 480)

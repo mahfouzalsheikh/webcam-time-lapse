@@ -166,6 +166,11 @@
             </div>
             <button id="export-button" class="primary" disabled>Export final video</button>
           </div>
+          <label class="check">
+            <input id="normalize-lighting" type="checkbox" aria-describedby="normalize-lighting-help" />
+            Normalize brightness and white balance (reduce flicker)
+          </label>
+          <p id="normalize-lighting-help" class="help">Applies to the exported MP4 only; previews and original photos stay unchanged. Matches lighting across selected frames. Export takes longer and uses extra temporary disk space. May also reduce intentional lighting or color changes.</p>
           <div class="card video-editor">
             <div class="card-heading">
               <h3>1. Preview your video</h3>

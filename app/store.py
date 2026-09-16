@@ -33,6 +33,8 @@ class Store:
                 db.execute("ALTER TABLE exports ADD COLUMN settings TEXT")
             if "snapshot" not in {row[1] for row in db.execute("PRAGMA table_info(exports)")}:
                 db.execute("ALTER TABLE exports ADD COLUMN snapshot INTEGER NOT NULL DEFAULT 0")
+            if "normalize_lighting" not in {row[1] for row in db.execute("PRAGMA table_info(exports)")}:
+                db.execute("ALTER TABLE exports ADD COLUMN normalize_lighting INTEGER NOT NULL DEFAULT 0")
             if "excluded" not in {row[1] for row in db.execute("PRAGMA table_info(frames)")}:
                 db.execute("ALTER TABLE frames ADD COLUMN excluded INTEGER NOT NULL DEFAULT 0")
             db.execute("INSERT OR IGNORE INTO kv VALUES ('settings', ?)", (Settings().model_dump_json(),))

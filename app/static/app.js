@@ -389,7 +389,7 @@ function renderExports(jobs, id) {
       el("h3", date(job.created_at)),
       el(
         "p",
-        `${job.frames} photos · ${job.fps} fps · ${(job.frames / job.fps).toFixed(1)} seconds`,
+        `${job.frames} photos · ${job.fps} fps · ${(job.frames / job.fps).toFixed(1)} seconds${job.normalize_lighting ? " · Lighting normalized" : ""}`,
       ),
     );
     if (job.error) info.append(el("p", job.error, "error"));
@@ -649,7 +649,10 @@ $("export-button").onclick = (event) => {
   const id = currentId;
   action(event.currentTarget, async () => {
     if (!timeline || timeline.id !== id) return;
-    await api(endpoint(id, "exports"), "POST", { cutoff: timeline.cutoff });
+    await api(endpoint(id, "exports"), "POST", {
+      cutoff: timeline.cutoff,
+      normalize_lighting: $("normalize-lighting").checked,
+    });
     notify("Video queued. The download will appear when it is ready.");
   });
 };

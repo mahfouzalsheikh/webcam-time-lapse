@@ -63,3 +63,4 @@ class FrameSelection(BaseModel):
 
 class ExportRequest(BaseModel):
     cutoff: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    normalize_lighting: bool = False

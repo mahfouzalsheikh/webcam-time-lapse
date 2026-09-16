@@ -158,11 +158,11 @@ def create_app(data_dir=None, demo=None):
 
     @router.get("/exports")
     async def exports(recorder: Recorder = Depends(get_recorder)):
-        return recorder.store.rows("SELECT id,created_at,status,frames,fps,error FROM exports ORDER BY created_at DESC LIMIT 20")
+        return recorder.store.rows("SELECT id,created_at,status,frames,fps,error,normalize_lighting FROM exports ORDER BY created_at DESC LIMIT 20")
 
     @router.post("/exports", status_code=202)
     async def export(request: ExportRequest = ExportRequest(), recorder: Recorder = Depends(get_recorder)):
-        return await recorder.create_export(request.cutoff)
+        return await recorder.create_export(request.cutoff, normalize_lighting=request.normalize_lighting)
 
     app.include_router(router, prefix="/api/projects/{project_id}")
     app.include_router(router, prefix="/api", include_in_schema=False)
