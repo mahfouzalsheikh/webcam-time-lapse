@@ -21,7 +21,7 @@ def export_details(job):
             "progress": progress_details(job)}
 
 
-def camera_filters(job, settings, target, bounds, frames=None):
+def camera_filters(job, settings, bounds, frames=None):
     frames = frames if frames is not None else output_frame_count(job['frames'], job.get('interpolation', 'none'), job.get('intermediate_frames', 0))
     zoom = 1 + job.get('cinematic_zoom_percent', 20) / 100
     if frames < 2 or zoom == 1:
@@ -36,17 +36,13 @@ def camera_filters(job, settings, target, bounds, frames=None):
     # Perspective counts output frames from one, unlike zoompan's zero-based on.
     fraction = f"clip((on-1)/{frames - 1},0,1)"
     ease = f"({fraction}*{fraction}*(3-2*{fraction}))"
-    tx, ty = (max(0., min(1., value)) for value in target)
-    # Clamp the destination view once, then ease all four source corners toward
-    # it. This keeps the path inside the photo without hitting a pan limit partway
-    # through the move. The final view matches the configured maximum zoom.
-    inset = 1 - 1 / zoom
-    end_x = max(0., min(inset, tx - 1 / (2 * zoom)))
-    end_y = max(0., min(inset, ty - 1 / (2 * zoom)))
-    left_edge = f"W*{end_x:.12f}*{ease}"
-    right_edge = f"W*(1-{inset - end_x:.12f}*{ease})"
-    top_edge = f"H*{end_y:.12f}*{ease}"
-    bottom_edge = f"H*(1-{inset - end_y:.12f}*{ease})"
+    # Move opposite crop edges inward by equal amounts. The image center stays
+    # fixed even when growth or lighting activity is concentrated on one side.
+    inset = (1 - 1 / zoom) / 2
+    left_edge = f"W*{inset:.12f}*{ease}"
+    right_edge = f"W*(1-{inset:.12f}*{ease})"
+    top_edge = f"H*{inset:.12f}*{ease}"
+    bottom_edge = f"H*(1-{inset:.12f}*{ease})"
     # zoompan rounds crop positions and dimensions to whole pixels, even with
     # supersampling. Perspective's cubic resampler retains fractional coordinates
     # for a smooth affine pan/zoom at every resolution, one output per input.
@@ -81,14 +77,13 @@ def interpolation_filters(job):
     return filters
 
 
-def export_filters(job, settings, cinematic_target=(.5, .5), content_bounds=None, shots=None):
+def export_filters(job, settings, content_bounds=None, shots=None):
     filters = (f"scale={settings.width}:{settings.height}:force_original_aspect_ratio=decrease:flags=lanczos:eval=frame,"
                f"pad={settings.width}:{settings.height}:(ow-iw)/2:(oh-ih)/2:eval=frame,setsar=1")
     if not job.get('cinematic_focus') or not shots or len(shots) == 1:
         filters += interpolation_filters(job)
         if job.get('cinematic_focus'):
-            target = shots[0]['target'] if shots else cinematic_target
-            filters += camera_filters(job, settings, target, content_bounds)
+            filters += camera_filters(job, settings, content_bounds)
         return filters
 
     # Interpolate within each shot, never across a detected cut. Keep the same
@@ -108,7 +103,7 @@ def export_filters(job, settings, cinematic_target=(.5, .5), content_bounds=None
         # fps establishes the correct final-frame duration for concat, including
         # one-photo shots. Reset PTS before it so no source frames get duplicated.
         filters += f",settb=AVTB,setpts=N/({job['fps']}*TB),fps={job['fps']}:round=near"
-        filters += camera_filters(local, settings, shot['target'], shot.get('bounds', content_bounds), frames + hold)
+        filters += camera_filters(local, settings, shot.get('bounds', content_bounds), frames + hold)
         filters += f"[move{i}]"
     filters += ';' + ''.join(f"[move{i}]" for i in range(len(shots)))
     return filters + f"concat=n={len(shots)}:v=1:a=0,setsar=1"

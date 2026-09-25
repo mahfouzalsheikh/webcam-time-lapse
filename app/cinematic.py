@@ -118,14 +118,7 @@ def prepare_frames(paths, check, progress=None, scenes=None):
         mask = focus_mask(paths[start:end], check,
                           lambda stage, completed, total: report(stage, start + completed, len(paths)))
         masks.append(mask)
-    shots = []
-    for (start, end), mask in zip(scenes, masks):
-        bounds = mask.point(lambda value: 255 if value >= 128 else 0).getbbox() if mask else None
-        target = (.5, .5)
-        if bounds:
-            left, top, right, bottom = bounds
-            target = (left + right) / (2 * mask.width), (top + bottom) / (2 * mask.height)
-        shots.append(dict(start=start, end=end, target=target))
+    shots = [dict(start=start, end=end) for start, end in scenes]
     report('focusing', 0, len(paths))
     shot_index = 0
     for index, path in enumerate(paths, 1):
@@ -148,5 +141,5 @@ def prepare_frames(paths, check, progress=None, scenes=None):
             finally:
                 temporary.unlink(missing_ok=True)
         report('focusing', index, len(paths))
-    # Keep one fixed focus and camera target per shot; never chase growing leaves.
+    # Focus masks affect background softening only; camera zoom remains centered.
     return shots

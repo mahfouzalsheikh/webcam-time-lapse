@@ -170,7 +170,7 @@
             <h3>Export options</h3>
             <label class="check">
               <input id="cinematic-focus" type="checkbox" aria-describedby="cinematic-focus-help" />
-              Cinematic motion — pan and zoom
+              Cinematic motion — centered zoom
             </label>
             <label>Maximum zoom increase (%)
               <input id="cinematic-zoom-percent" type="number" min="0" max="100" step="1" value="20" required disabled aria-describedby="cinematic-focus-help" />
@@ -179,7 +179,7 @@
             <input id="cinematic-reset-threshold" type="range" min="0" max="100" step="1" value="45" disabled aria-describedby="cinematic-reset-help cinematic-reset-count" />
             <p id="cinematic-reset-help" class="help">Lower detects smaller visual changes; higher requires stronger changes. Very low values can also detect small movements or growth. The count updates for the selected export range. Orientation changes always start a new shot.</p>
             <p id="cinematic-reset-count" class="help" role="status" aria-live="polite">Enable cinematic motion to calculate zoom resets.</p>
-            <p id="cinematic-focus-help" class="help">Adds a slow push-in with a gentle pan toward the changing area. 20% ends at 1.2× zoom; 0% keeps the view still. Major changes in camera angle automatically restart the zoom at full view, with no blending across the cut. Movement continues across added frames, including Repeat photos; use more added frames for a longer camera move. Keeps changing areas sharp, softens the background, and includes lighting normalization. The timing rings stay fixed. Applies to the exported MP4 only; a single photo remains still.</p>
+            <p id="cinematic-focus-help" class="help">Adds a smooth push-in centered on the image. 20% ends at 1.2× zoom; 0% keeps the view still. Major changes in camera angle automatically restart the zoom at full view, with no blending across the cut. Movement continues across added frames, including Repeat photos; use more added frames for a longer camera move. Keeps changing areas sharp, softens the background, and includes lighting normalization. The timing rings stay fixed. Applies to the exported MP4 only; a single photo remains still.</p>
             <label class="check">
               <input id="timing-overlay" type="checkbox" aria-describedby="timing-overlay-help" />
               Show elapsed-time rings in the top-left corner

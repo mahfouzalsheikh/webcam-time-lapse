@@ -41,7 +41,6 @@ def test_detects_broad_angle_change_but_not_exposure_or_local_growth(tmp_path):
     assert cinematic.scene_ranges(paths, lambda: None, lambda *args: updates.append(args)) == [(0, 3), (3, 5)]
     assert updates[-1] == ('scene_analysis', 5, 5)
     shots = cinematic.prepare_frames(paths, lambda: None, scenes=[(0, 3), (3, 5)])
-    assert shots[1]['target'] == (.5, .5)  # Changes in the first shot cannot affect this shot's focus.
     assert ImageChops.difference(Image.open(paths[3]), angle).getbbox() is None
 
 
@@ -81,7 +80,7 @@ def test_shot_reset_preserves_duration_and_does_not_blend_across_cuts(tmp_path, 
     colors = [(20, 40, 70), (70, 40, 20), (40, 70, 20)]
     shots, index = [], 0
     for length, color in zip(lengths, colors):
-        shots.append(dict(start=index, end=index + length, target=(.5, .5)))
+        shots.append(dict(start=index, end=index + length))
         for _ in range(length):
             image = Image.new('RGB', (320, 240), color)
             ImageDraw.Draw(image).rectangle((140, 90, 180, 130), fill=(230,) * 3)

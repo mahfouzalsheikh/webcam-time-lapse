@@ -170,7 +170,7 @@ def test_camera_move_is_visible_on_repeated_stills_bounded_and_keeps_rings_fixed
     job = dict(frames=2, fps=30, interpolation='repeat', intermediate_frames=59, cinematic_focus=True)
     overlay = tmp_path / 'clock.ass'
     write_overlay(overlay, [100, 100], job, settings, lambda: None, content_bounds=bounds)
-    filters = export_filters(job, settings, (.8, .5), bounds)
+    filters = export_filters(job, settings, content_bounds=bounds)
     filters += f',subtitles={overlay}'
     raw = subprocess.check_output(['ffmpeg', '-v', 'error', '-framerate', '30/60', '-i', str(tmp_path / '%d.png'),
                                    '-vf', filters, '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-threads', '1', '-'])
@@ -187,9 +187,7 @@ def test_camera_move_is_visible_on_repeated_stills_bounded_and_keeps_rings_fixed
     widths = [box[2] - box[0] for box in boxes]
     assert widths[-1] / widths[0] == pytest.approx(1.2, abs=.05)
     centers = [(box[0] + box[2]) / 2 for box in boxes]
-    assert centers[-1] < centers[0] - 10  # Explicit pan toward the right-hand target.
-    assert max(abs(b - a) for a, b in zip(centers, centers[1:])) <= 2
-    assert all(b <= a + .5 for a, b in zip(centers, centers[1:]))
+    assert all(abs(center - centers[0]) <= .5 for center in centers)
     left = bounds[0]
     dial = (left, 0, left + 65, 65)
     assert all(frame.crop(dial).tobytes() == frames[0].crop(dial).tobytes() for frame in frames)
@@ -199,33 +197,34 @@ def test_camera_move_is_visible_on_repeated_stills_bounded_and_keeps_rings_fixed
             assert frame.crop((240, 0, 320, 240)).getbbox() is None
 
 
-def test_still_scene_gets_centered_camera_target_and_single_frame_stays_still(tmp_path):
+def test_single_frame_stays_still(tmp_path):
     from app.video import export_filters
 
     path = tmp_path / 'still.png'
     Image.new('RGB', (320, 240), (100, 120, 140)).save(path)
-    assert cinematic.prepare_frames([path], lambda: None) == [dict(start=0, end=1, target=(.5, .5))]
+    assert cinematic.prepare_frames([path], lambda: None) == [dict(start=0, end=1)]
     job = dict(frames=1, fps=24, interpolation='repeat', intermediate_frames=5, cinematic_focus=True)
     assert export_filters(job, Settings(width=320, height=240)) == export_filters(
         {**job, 'cinematic_focus': False}, Settings(width=320, height=240))
 
 
 @pytest.mark.skipif(not shutil.which('ffmpeg'), reason='FFmpeg required')
-@pytest.mark.parametrize('target', [(.8, .5), (.2, .8), (.5, .5)])
-def test_slow_camera_move_follows_subpixel_path_without_crop_jitter(tmp_path, target):
+@pytest.mark.parametrize('position', [(135, 110), (185, 140), (160, 120)])
+def test_slow_camera_move_follows_subpixel_path_without_crop_jitter(tmp_path, position):
     from math import sqrt
     from app.video import export_filters
 
     # Hold identical captures long enough that each camera step is less than a
     # pixel. Integer crop rounding used to cause jumps and even reverse the pan.
     image = Image.new('RGB', (320, 240), (32, 32, 32))
-    ImageDraw.Draw(image).rectangle((135, 90, 185, 150), fill=(224, 224, 224))
+    cx, cy = position
+    ImageDraw.Draw(image).rectangle((cx - 25, cy - 30, cx + 25, cy + 30), fill=(224, 224, 224))
     for i in range(2):
         image.save(tmp_path / f'{i}.png')
     job = dict(frames=2, fps=30, interpolation='repeat', intermediate_frames=179, cinematic_focus=True)
     raw = subprocess.check_output([
         'ffmpeg', '-v', 'error', '-framerate', '30/180', '-i', str(tmp_path / '%d.png'),
-        '-vf', export_filters(job, Settings(width=320, height=240), target),
+        '-vf', export_filters(job, Settings(width=320, height=240)),
         '-f', 'rawvideo', '-pix_fmt', 'gray', '-threads', '1', '-'])
     stride = 320 * 240
     assert len(raw) == 181 * stride
@@ -241,11 +240,11 @@ def test_slow_camera_move_follows_subpixel_path_without_crop_jitter(tmp_path, ta
         t = n / 180
         ease = t * t * (3 - 2 * t)
         scale = 1 / (1 - ease / 6)
-        for weights, size, center, span, destination in zip(
-                (columns, rows), (320, 240), (160, 120), (51, 61), target):
+        for weights, size, center, span in zip(
+                (columns, rows), (320, 240), position, (51, 61)):
             total = sum(weights)
             actual_center = sum(i * w for i, w in enumerate(weights)) / total
-            end_offset = size * max(0, min(1 / 6, destination - 5 / 12))
+            end_offset = size / 12
             expected_center = (center - end_offset * ease) * scale
             assert actual_center == pytest.approx(expected_center, abs=.08)
             # Track size as well as position, catching uneven zoom even when the
@@ -253,3 +252,40 @@ def test_slow_camera_move_follows_subpixel_path_without_crop_jitter(tmp_path, ta
             spread = sqrt(sum((i - actual_center) ** 2 * w for i, w in enumerate(weights)) / total)
             expected_spread = sqrt((span ** 2 - 1) / 12) * scale
             assert spread == pytest.approx(expected_spread, abs=.08)
+
+
+@pytest.mark.skipif(not shutil.which('ffmpeg'), reason='FFmpeg required')
+@pytest.mark.parametrize('side', ['left', 'right'])
+def test_off_center_growth_does_not_steer_cinematic_zoom(tmp_path, side):
+    from app.video import export_filters
+
+    paths = []
+    x = 35 if side == 'left' else 260
+    for i in range(2):
+        image = Image.new('RGB', (320, 240), (70,) * 3)
+        draw = ImageDraw.Draw(image)
+        draw.rectangle((140, 100, 180, 140), fill=(245,) * 3)
+        draw.rectangle((x, 80 - i * 20, x + 15, 180), fill=(10, 25, 10))
+        path = tmp_path / f'{i}.png'
+        image.save(path)
+        paths.append(path)
+    mask = cinematic.focus_mask(paths, lambda: None, lambda *args: None)
+    assert mask is not None  # Actually exercise an asymmetric focus area.
+    assert mask.getpixel((int((x + 7) * mask.width / 320), int(70 * mask.height / 240))) > 128
+    shots = cinematic.prepare_frames(paths, lambda: None)
+    job = dict(frames=2, fps=30, interpolation='repeat', intermediate_frames=29,
+               cinematic_focus=True, cinematic_zoom_percent=40)
+    raw = subprocess.check_output([
+        'ffmpeg', '-v', 'error', '-framerate', '30/30', '-i', str(tmp_path / '%d.png'),
+        '-vf', export_filters(job, Settings(width=320, height=240), shots=shots),
+        '-f', 'rawvideo', '-pix_fmt', 'gray', '-threads', '1', '-'])
+    stride = 320 * 240
+    assert len(raw) == 31 * stride
+    widths = []
+    for n in range(31):
+        frame = Image.frombytes('L', (320, 240), raw[n * stride:(n + 1) * stride])
+        box = frame.point(lambda p: 255 if p > 125 else 0).getbbox()
+        assert (box[0] + box[2] - 1) / 2 == pytest.approx(160, abs=.5)
+        assert (box[1] + box[3] - 1) / 2 == pytest.approx(120, abs=.5)
+        widths.append(box[2] - box[0])
+    assert widths[-1] / widths[0] == pytest.approx(1.4, abs=.06)
