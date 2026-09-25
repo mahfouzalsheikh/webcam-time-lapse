@@ -19,7 +19,7 @@ const end = source.indexOf('function updateExportEstimate()', start);
 assert(start > 0 && end > start);
 const nodes = new Map();
 const node = id => {
-  if (!nodes.has(id)) nodes.set(id, {value: '', checked: false, textContent: ''});
+  if (!nodes.has(id)) nodes.set(id, Object.assign(new EventTarget(), {value: '', checked: false, textContent: ''}));
   return nodes.get(id);
 };
 node('cinematic-focus').checked = true;
@@ -37,6 +37,15 @@ const context = vm.createContext({
   api: (path, method, body, signal) => new Promise(resolve => requests.push({path, body, signal, resolve})),
 });
 vm.runInContext(source.slice(start, end), context);
+// Exercise the actual registered input/change listeners, not just their helper.
+context.updateExportEstimate = () => {context.updateCinematicResetAnalysis(); return true;};
+context.videoExportOptions = () => ({});
+context.updateVideoButtons = () => context.updateCinematicResetAnalysis();
+context.localStorage = {setItem: () => {}};
+const listenersStart = source.indexOf('for (const id of ["smooth-motion"');
+const listenersEnd = source.indexOf('let timeline = null', listenersStart);
+assert(listenersStart > 0 && listenersEnd > listenersStart);
+vm.runInContext(source.slice(listenersStart, listenersEnd), context);
 const runTimers = () => {for (const fn of [...timers]) {timers.delete(fn); fn();}};
 const flush = () => new Promise(setImmediate);
 (async () => {
@@ -44,10 +53,13 @@ const flush = () => new Promise(setImmediate);
   runTimers();
   assert.equal(requests.length, 1);
   node('cinematic-reset-threshold').value = '70';
-  context.updateCinematicResetAnalysis();
+  node('cinematic-reset-threshold').dispatchEvent(new Event('input'));
   runTimers();
   assert.equal(requests.length, 1); // Moving the slider during analysis shares the work.
   requests[0].resolve({frames: 156, changes: [
+    {photo: 10, score_percent: 8, orientation_change: false},
+    {photo: 20, score_percent: 22, orientation_change: false},
+    {photo: 30, score_percent: 0, orientation_change: false},
     {photo: 61, score_percent: 85, orientation_change: false},
     {photo: 136, score_percent: 64, orientation_change: false},
   ]});
@@ -55,9 +67,15 @@ const flush = () => new Promise(setImmediate);
   assert.match(node('cinematic-reset-count').textContent, /^1 zoom reset detected/);
   assert.equal(node('cinematic-reset-value').textContent, '70%');
   node('cinematic-reset-threshold').value = '45';
-  context.updateCinematicResetAnalysis();
+  node('cinematic-reset-threshold').dispatchEvent(new Event('change'));
   assert.match(node('cinematic-reset-count').textContent, /^2 zoom resets detected/);
   assert.match(node('cinematic-reset-count').textContent, /61, 136/);
+  for (const [value, count] of [[10, 3], [0, 4], [100, 0], [45, 2]]) {
+    node('cinematic-reset-threshold').value = String(value);
+    node('cinematic-reset-threshold').dispatchEvent(new Event('input'));
+    assert.match(node('cinematic-reset-count').textContent, new RegExp(`^${count} zoom resets detected`));
+    assert.match(node('cinematic-reset-count').textContent, new RegExp(`at ${value}% threshold`));
+  }
   assert.equal(requests.length, 1); // Recalculate immediately without more image reads.
   context.exportRange = {count: 2, start_frame_id: 'a', end_frame_id: 'b'};
   context.updateCinematicResetAnalysis();

@@ -43,16 +43,18 @@ def scene_changes(paths, check, progress=None):
                               for (a, b), (c, d) in zip(old_edges, edges))
             edge_change = sum(abs(a - c) + abs(b - d)
                               for (a, b), (c, d) in zip(old_edges, edges)) / max(edge_energy, 1e-6)
-            # A reframed subject against a plain wall may change fewer than half
-            # the tiles. Require strong contour change plus changes spread over
-            # at least ten tiles, instead of requiring the wall itself to move.
-            # The spatial/absolute floors reject tiny moving leaves and noise;
-            # the edge test rejects lighting changes that retain scene geometry.
-            reframed = sum(tiles) / len(tiles) >= .22 and sum(value > .30 for value in tiles) >= 10
-            broad_change = sum(value > .75 for value in tiles) >= 27
-            if abs(aspect / old_aspect - 1) > .05 or reframed or broad_change:
-                changes.append(dict(photo=index + 1, score_percent=edge_change * 100,
-                                    orientation_change=abs(aspect / old_aspect - 1) > .05))
+            # Score every transition. Hard-filtering weaker changes here made
+            # the slider unable to discover them at lower thresholds. Use the
+            # weakest supporting evidence as the score instead: contour change,
+            # average change and its spatial spread. At 45%, this retains the
+            # original safeguards (.22 average, .30 across ten tiles, or .75
+            # across 27 tiles), while lower values can accept smaller changes.
+            ranked = sorted(tiles, reverse=True)
+            reframing_score = min(sum(tiles) / len(tiles) * 45 / .22, ranked[9] * 45 / .30)
+            broad_score = ranked[26] * 45 / .75
+            score = min(edge_change * 100, max(reframing_score, broad_score))
+            changes.append(dict(photo=index + 1, score_percent=score,
+                                orientation_change=abs(aspect / old_aspect - 1) > .05))
         previous = aspect, current, edges
         report('scene_analysis', index + 1, len(paths))
     return changes
@@ -60,7 +62,8 @@ def scene_changes(paths, check, progress=None):
 
 def reset_photos(changes, threshold_percent=45):
     return [change['photo'] for change in changes
-            if change['orientation_change'] or change['score_percent'] >= threshold_percent]
+            if change['orientation_change'] or (change['score_percent'] > 0
+                                                and change['score_percent'] >= threshold_percent)]
 
 
 def scene_ranges(paths, check, progress=None, threshold_percent=45):

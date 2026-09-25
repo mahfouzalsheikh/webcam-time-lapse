@@ -29,6 +29,7 @@ def test_preview_matches_export_thresholds_and_reuses_comparisons(tmp_path):
             assert response.status_code == 200
             preview = response.json()
             assert preview['frames'] == 6
+            assert len(preview['changes']) == 5  # Keep every transition for lower thresholds.
             assert cinematic.reset_photos(preview['changes']) == [3, 5]
             assert client.post('/api/cinematic-analysis', json={}).json() == preview
             assert analyze.call_count == 1
@@ -57,7 +58,9 @@ def test_preview_respects_range_exclusions_cutoff_and_project_and_invalidates_ca
             assert cinematic.reset_photos(result['changes']) == [3]
             assert analyze.call_count == 3
             result = client.post('/api/cinematic-analysis', json={'cutoff': 2}).json()
-            assert result == {'frames': 2, 'changes': []}
+            assert result['frames'] == 2
+            assert len(result['changes']) == 1
+            assert cinematic.reset_photos(result['changes']) == []
             assert analyze.call_count == 4
         other = client.post('/api/projects', json={'name': 'Empty project'}).json()['id']
         assert client.post(f'/api/projects/{other}/cinematic-analysis', json={}).json() == {'frames': 0, 'changes': []}
@@ -97,3 +100,20 @@ def test_orientation_changes_reset_even_at_high_threshold(tmp_path):
                dict(photo=3, score_percent=60, orientation_change=False)]
     assert cinematic.reset_photos(changes, 100) == [2]
     assert cinematic.reset_photos(changes, 45) == [2, 3]
+
+
+def test_lower_threshold_can_discover_previously_filtered_small_reframing(tmp_path):
+    from PIL import ImageChops
+    original = sparse_scene(1)
+    shifted = ImageChops.offset(original, 6, 0)
+    paths = []
+    for i, image in enumerate((original, shifted, shifted)):
+        path = tmp_path / f'{i}.png'
+        image.save(path)
+        paths.append(path)
+    changes = cinematic.scene_changes(paths, lambda: None)
+    assert len(changes) == 2
+    assert 5 < changes[0]['score_percent'] < 45
+    assert cinematic.reset_photos(changes, 45) == []
+    assert cinematic.reset_photos(changes, 5) == [2]
+    assert cinematic.reset_photos(changes, 0) == [2]  # Identical photos never become cuts.

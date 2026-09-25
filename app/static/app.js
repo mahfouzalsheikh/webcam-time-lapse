@@ -922,12 +922,12 @@ function clearCinematicAnalysis() {
 function renderCinematicResetCount() {
   const threshold = Number($("cinematic-reset-threshold").value);
   const photos = cinematicAnalysisData.changes
-    .filter((change) => change.orientation_change || change.score_percent >= threshold)
+    .filter((change) => change.orientation_change || (change.score_percent > 0 && change.score_percent >= threshold))
     .map((change) => change.photo);
   const locations = photos.length ? ` Before selected photo${photos.length === 1 ? "" : "s"} ${photos.slice(0, 8).join(", ")}${photos.length > 8 ? ", …" : ""}.` : "";
   $("cinematic-reset-count").textContent = Number($("cinematic-zoom-percent").value) === 0
-    ? `${photos.length} angle changes detected; zoom is off at 0%.${locations}`
-    : `${photos.length} zoom reset${photos.length === 1 ? "" : "s"} detected in ${cinematicAnalysisData.frames} selected photos.${locations}`;
+    ? `${photos.length} angle changes detected; zoom is off at 0% (reset threshold ${threshold}%).${locations}`
+    : `${photos.length} zoom reset${photos.length === 1 ? "" : "s"} detected in ${cinematicAnalysisData.frames} selected photos at ${threshold}% threshold.${locations}`;
 }
 function updateCinematicResetAnalysis() {
   const enabled = $("cinematic-focus").checked;
@@ -1004,7 +1004,7 @@ function updateExportEstimate() {
   return true;
 }
 for (const id of ["smooth-motion", "interpolation-method", "intermediate-frames", "video-export-fps", "video-export-resolution", "normalize-lighting", "timing-overlay", "cinematic-focus", "cinematic-zoom-percent", "cinematic-reset-threshold"]) {
-  $(id).addEventListener("input", () => {
+  const updateOption = () => {
     if (currentId && updateExportEstimate()) {
       const options = videoExportOptions();
       options.fps = $("video-export-fps").value ? Number($("video-export-fps").value) : null;
@@ -1013,7 +1013,9 @@ for (const id of ["smooth-motion", "interpolation-method", "intermediate-frames"
       try { localStorage.setItem(`video-export-options:${currentId}`, JSON.stringify(options)); } catch { /* Storage may be disabled. */ }
     }
     updateVideoButtons();
-  });
+  };
+  $(id).addEventListener("input", updateOption);
+  $(id).addEventListener("change", updateOption);
 }
 let timeline = null, timelinePage = 0, timelineLoading = false, timelineRequest = 0;
 let exportRange = { start: 0, end: -1, count: 0, start_frame_id: null, end_frame_id: null };
