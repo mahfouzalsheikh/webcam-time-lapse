@@ -54,7 +54,7 @@ class Projects:
     def cleanup_project(self, project_id):
         if project_id == 'default':
             # The legacy project shares the catalog root with all other projects.
-            for folder in ('frames', 'thumbs', 'exports'):
+            for folder in ('frames', 'thumbs', 'previews', 'exports'):
                 path = self.root / folder
                 if path.exists():
                     shutil.rmtree(path)

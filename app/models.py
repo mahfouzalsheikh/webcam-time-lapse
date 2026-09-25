@@ -63,4 +63,11 @@ class FrameSelection(BaseModel):
 
 class ExportRequest(BaseModel):
     cutoff: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    start_frame_id: FrameId | None = None
+    end_frame_id: FrameId | None = None
     normalize_lighting: bool = False
+    timing_overlay: bool = False
+    interpolation: Literal["none", "repeat", "blend", "motion"] = "none"
+    intermediate_frames: int = Field(default=5, ge=1, le=59)
+    fps: int | None = Field(default=None, ge=1, le=60)
+    resolution: Literal["project", "720p", "1080p", "2160p"] = "project"

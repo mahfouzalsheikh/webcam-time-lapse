@@ -11,6 +11,7 @@ from . import camera
 from .models import CameraDevice, ExportRequest, FrameId, FrameSelection, PreviewRequest, Settings
 from .service import Recorder
 from .projects import Projects
+from .video import export_details
 
 
 def create_app(data_dir=None, demo=None):
@@ -134,8 +135,8 @@ def create_app(data_dir=None, demo=None):
         return recorder.store.rows("SELECT * FROM frames ORDER BY captured_at DESC LIMIT ? OFFSET ?", (limit, offset))
 
     @router.get("/timeline")
-    async def timeline(cutoff: float | None = Query(None, ge=0, allow_inf_nan=False), limit: int = Query(24, ge=1, le=100), offset: int = Query(0, ge=0), included_only: bool = False, recorder: Recorder = Depends(get_recorder)):
-        return recorder.timeline(cutoff, offset, limit, included_only)
+    async def timeline(cutoff: float | None = Query(None, ge=0, allow_inf_nan=False), limit: int = Query(24, ge=1, le=100), offset: int = Query(0, ge=0), included_only: bool = False, start_frame_id: FrameId | None = None, end_frame_id: FrameId | None = None, recorder: Recorder = Depends(get_recorder)):
+        return recorder.timeline(cutoff, offset, limit, included_only, start_frame_id, end_frame_id)
 
     @router.patch("/frames/selection")
     async def selection(request: FrameSelection, recorder: Recorder = Depends(get_recorder)):
@@ -158,11 +159,11 @@ def create_app(data_dir=None, demo=None):
 
     @router.get("/exports")
     async def exports(recorder: Recorder = Depends(get_recorder)):
-        return recorder.store.rows("SELECT id,created_at,status,frames,fps,error,normalize_lighting FROM exports ORDER BY created_at DESC LIMIT 20")
+        return [export_details(job) for job in recorder.store.rows("SELECT id,created_at,status,frames,fps,error,settings,normalize_lighting,timing_overlay,interpolation,intermediate_frames,start_frame_id,end_frame_id,progress FROM exports ORDER BY created_at DESC LIMIT 20")]
 
     @router.post("/exports", status_code=202)
     async def export(request: ExportRequest = ExportRequest(), recorder: Recorder = Depends(get_recorder)):
-        return await recorder.create_export(request.cutoff, normalize_lighting=request.normalize_lighting)
+        return await recorder.create_export(**request.model_dump())
 
     app.include_router(router, prefix="/api/projects/{project_id}")
     app.include_router(router, prefix="/api", include_in_schema=False)
@@ -171,8 +172,16 @@ def create_app(data_dir=None, demo=None):
     @app.get("/media/{kind}/{filename}", include_in_schema=False)
     async def media(kind: str, filename: str, recorder: Recorder = Depends(get_recorder)):
         extension = "mp4" if kind == "exports" else "jpg"
-        if kind not in {"frames", "thumbs", "exports"} or not re.fullmatch(r"[0-9a-f]{32}\." + extension, filename):
+        if kind not in {"frames", "thumbs", "previews", "exports"} or not re.fullmatch(r"[0-9a-f]{32}\." + extension, filename):
             raise HTTPException(404)
+        if kind == "previews":
+            try:
+                content = await recorder.preview_frame(filename[:-4])
+            except KeyError:
+                raise HTTPException(404, "Photo not found in this project")
+            except OSError:
+                raise HTTPException(503, "Could not prepare this photo's video preview")
+            return Response(content, media_type="image/jpeg", headers={"Cache-Control": "private, max-age=3600"})
         path = recorder.root / kind / filename
         if not path.is_file():
             raise HTTPException(404)

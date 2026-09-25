@@ -166,11 +166,55 @@
             </div>
             <button id="export-button" class="primary" disabled>Export final video</button>
           </div>
-          <label class="check">
-            <input id="normalize-lighting" type="checkbox" aria-describedby="normalize-lighting-help" />
-            Normalize brightness and white balance (reduce flicker)
-          </label>
-          <p id="normalize-lighting-help" class="help">Applies to the exported MP4 only; previews and original photos stay unchanged. Matches lighting across selected frames. Export takes longer and uses extra temporary disk space. May also reduce intentional lighting or color changes.</p>
+          <div class="card export-options">
+            <h3>Export options</h3>
+            <label class="check">
+              <input id="timing-overlay" type="checkbox" aria-describedby="timing-overlay-help" />
+              Show elapsed-time rings in the top-left corner
+            </label>
+            <p id="timing-overlay-help" class="help">Outer ring: 24 hours. Inner ring: overall progress from the first to the last included capture. The day number and elapsed days, hours and minutes sit inside the rings, on a circular translucent background. The display stays inside the photo area, clear of black borders. Day 1 starts at the first included photo. Uses actual capture times, including overnight gaps. Repeat photos holds the timer; motion and blend transitions advance it between captures. Appears in the exported MP4 only.</p>
+            <label class="check">
+              <input id="normalize-lighting" type="checkbox" aria-describedby="normalize-lighting-help" />
+              Normalize brightness and white balance (reduce flicker)
+            </label>
+            <p id="normalize-lighting-help" class="help">Reduces brightness and color flicker using matching scene regions, rejecting regions that change with growth or movement. Keeps photo detail without blending frames. Works best with a fixed camera and a mostly stationary background. Applies only to the MP4 and uses extra temporary disk space; intentional lighting changes may also be reduced.</p>
+            <label class="check">
+              <input id="smooth-motion" type="checkbox" aria-describedby="smooth-motion-help" />
+              Lengthen video — add frames between photos
+            </label>
+            <div class="export-option-grid">
+              <label>Transition method
+                <select id="interpolation-method" disabled>
+                  <option value="repeat">Repeat photos (sharp, fast)</option>
+                  <option value="motion">Motion interpolation (sharper, slow)</option>
+                  <option value="blend">Blend (soft crossfade, may ghost)</option>
+                </select>
+              </label>
+              <label>Frames added between photos
+                <input id="intermediate-frames" type="number" min="1" max="59" step="1" value="5" required disabled />
+              </label>
+              <label>Output frame rate
+                <select id="video-export-fps">
+                  <option value="">Use project setting</option>
+                  <option value="24">24 fps</option>
+                  <option value="30">30 fps</option>
+                  <option value="60">60 fps</option>
+                </select>
+              </label>
+              <label>Output resolution
+                <select id="video-export-resolution">
+                  <option value="project">Use project setting</option>
+                  <option value="720p">720p · 1280 × 720</option>
+                  <option value="1080p">1080p · 1920 × 1080</option>
+                  <option value="2160p">4K · 3840 × 2160</option>
+                </select>
+              </label>
+            </div>
+            <p id="smooth-motion-help" class="help">Repeat photos holds each photo longer without blending or changing its detail; movement remains in steps. Combine it with lighting normalization for a steadier background and a longer video. Motion interpolation generates smoother movement but may distort overlapping leaves or large changes. Blend crossfades photos and can look blurry. More added frames lengthen the video without taking more photos. Lighting correction runs first; this preview shows original photos only.</p>
+            <p id="export-estimate" class="export-estimate" role="status" aria-live="polite">Loading export estimate…</p>
+            <p class="help">Export choices are remembered for this project in this browser. Capture frequency is configured in Settings.</p>
+            <p class="help">For faster exports, choose 1080p and 30 fps with fewer added frames. Changing from 5 added frames at 60 fps to 2 at 30 fps keeps approximately the same duration with half as many video frames. Output resolution affects this video only.</p>
+          </div>
           <div class="card video-editor">
             <div class="card-heading">
               <h3>1. Preview your video</h3>
@@ -189,12 +233,33 @@
               </div>
               <label for="timeline-scrubber">Video position</label>
               <input id="timeline-scrubber" type="range" min="0" max="0" value="0" step="1" disabled />
+              <fieldset class="export-range">
+                <legend>Export range</legend>
+                <div class="export-range-track" aria-hidden="true"><span id="export-range-fill"></span></div>
+                <div class="export-option-grid">
+                  <div>
+                    <label for="range-start-number">Start photo (inclusive)</label>
+                    <input id="range-start-number" type="number" min="1" max="1" step="1" value="1" required disabled />
+                    <input id="range-start" type="range" min="1" max="1" step="1" value="1" aria-label="Range start" disabled />
+                    <button id="range-start-current" class="outline" disabled>Start at current photo</button>
+                  </div>
+                  <div>
+                    <label for="range-end-number">End photo (inclusive)</label>
+                    <input id="range-end-number" type="number" min="1" max="1" step="1" value="1" required disabled />
+                    <input id="range-end" type="range" min="1" max="1" step="1" value="1" aria-label="Range end" disabled />
+                    <button id="range-end-current" class="outline" disabled>End at current photo</button>
+                  </div>
+                </div>
+                <p id="range-summary" role="status">The full timeline will be exported.</p>
+                <button id="range-reset" class="outline">Use full range</button>
+                <p class="help">Photo numbers follow the timeline after removed frames are skipped. Both endpoints are included. Playback and export use this range; scrubbing can still inspect any photo. Originals and frame exclusions are kept.</p>
+              </fieldset>
               <div class="frame-details">
                 <span id="current-frame-label">Select a frame below to inspect it.</span>
                 <a id="frame-original" target="_blank" rel="noopener" hidden>Open original photo ↗</a>
                 <button id="remove-current" class="outline" disabled>Remove this frame</button>
               </div>
-              <p class="help">Preview uses smaller images for quick loading and may play more slowly on a slow connection. Your MP4 uses the full selected resolution and video speed.</p>
+              <p class="help">Playback uses lightweight frames buffered ahead for speed. Pause or select a photo to load a sharper preview, up to 1920 pixels on the longest side. Open the original photo for full detail. Your MP4 uses the selected export resolution and video speed.</p>
             </div>
           </div>
           <div class="section-heading">

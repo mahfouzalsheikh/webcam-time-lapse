@@ -101,7 +101,7 @@ def test_delete_projects_including_default_and_last_project_without_resurrection
         # Include video and temporary resources in the legacy project cleanup.
         (tmp_path / 'exports' / ('a' * 32 + '.mp4')).write_bytes(b'video')
         assert delete(client, '/api/projects/default').status_code == 200
-        for name in ('frames', 'thumbs', 'exports', 'state.sqlite3', 'state.sqlite3-wal', 'state.sqlite3-shm', 'recorder.lock'):
+        for name in ('frames', 'thumbs', 'previews', 'exports', 'state.sqlite3', 'state.sqlite3-wal', 'state.sqlite3-shm', 'recorder.lock'):
             assert not (tmp_path / name).exists()
         assert (tmp_path / 'projects.sqlite3').exists()
         assert client.get('/api/status').status_code == 404

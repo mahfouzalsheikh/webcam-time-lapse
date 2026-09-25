@@ -668,6 +668,14 @@ input[type="checkbox"] {
 .export-row > div {
   min-width: 0;
 }
+.export-progress { flex: 0 1 420px; width: 100%; padding: 14px; border-radius: 6px; background: var(--soft); }
+.export-progress strong { font-size: 15px; }
+.export-progress progress { display: block; width: 100%; height: 14px; margin: 10px 0; accent-color: var(--green); }
+.export-progress .help { font-size: 13px; }
+@media (max-width: 700px) {
+  .export-row:has(.export-progress) { flex-direction: column; align-items: stretch; }
+  .export-progress { flex-basis: auto; }
+}
 #notice {
   position: sticky;
   top: 86px;
@@ -883,11 +891,24 @@ footer {
   }
 }
 /* Video review keeps the image large and editing controls within reach. */
+.export-options { padding: 20px; margin-top: 20px; }
+.export-options h3 { margin: 0; }
+.export-option-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 16px; }
+.export-option-grid label { margin: 0; justify-content: space-between; }
+.export-options .check input { flex-shrink: 0; }
+.export-estimate { padding: 14px; background: var(--soft); border-radius: 6px; font-weight: 600; }
+.export-range { margin: 18px 0; padding: 16px; border: 1px solid var(--line); border-radius: 6px; min-width: 0; }
+.export-range legend { padding: 0 6px; font-weight: 600; }
+.export-range input[type="range"] { padding: 0; margin: 12px 0; accent-color: var(--green); }
+.export-range-track { height: 8px; background: #dde3d9; border-radius: 4px; margin: 4px 0 18px; overflow: hidden; }
+.export-range-track span { display: block; height: 100%; background: var(--green); }
+.timeline-card.outside-range img { opacity: .45; }
+.timeline-card.outside-range { border-style: dashed; }
 .video-editor { margin-top: 20px; }
 .video-editor h3 { margin: 0; }
 .editor-note { padding: 0 21px 12px; font-size: 16px; }
-.timeline-stage { background: #18291f; height: clamp(220px, 40vw, 500px); display: flex; align-items: center; justify-content: center; }
-.timeline-stage img { width: 100%; height: 100%; object-fit: contain; }
+.timeline-stage { background: #18291f; min-height: 220px; display: flex; align-items: center; justify-content: center; }
+.timeline-stage img { display: block; width: 100%; height: auto; }
 .timeline-stage p { color: #edf3e6; padding: 24px; text-align: center; }
 .timeline-controls { padding: 20px; }
 .timeline-controls label { margin-bottom: 0; }

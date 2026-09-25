@@ -14,9 +14,11 @@ from zoneinfo import ZoneInfo
 
 from PIL import Image, ImageOps
 
-from . import camera, dslr, lighting
-from .models import Settings
+from . import camera, dslr, lighting, timing_overlay
+from .models import ExportRequest, Settings
 from .store import Store
+from .video import export_details, export_filters
+from .export_progress import ExportProgress, FFmpegProgress
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +52,7 @@ class Recorder:
         self.stopping = threading.Event()
         self.tick_lock = asyncio.Lock()
         self.state_lock = asyncio.Lock()
+        self.preview_lock = asyncio.Lock()
         self.export_task = None
         self.scheduler_task = None
         self.owner = None
@@ -75,12 +78,14 @@ class Recorder:
             if path.is_dir() and re.fullmatch(r"\.[0-9a-f]{32}\.lighting", path.name):
                 shutil.rmtree(path)
         for folder, pattern in (("frames", r"\.[0-9a-f]{32}\.jpg"),
-                                ("exports", r"\.?[0-9a-f]{32}\.(txt|log)|\.[0-9a-f]{32}\.mp4")):
+                                ("previews", r"\.[0-9a-f]{32}\.jpg"),
+                                ("exports", r"\.?[0-9a-f]{32}\.(txt|log|progress)|\.[0-9a-f]{32}\.(mp4|timing\.ass)")):
             for path in (self.root / folder).iterdir():
                 if path.is_file() and re.fullmatch(pattern, path.name):
                     path.unlink()
         with self.store.connect() as db:
-            db.execute("UPDATE exports SET status='queued', error=NULL WHERE status='running'")
+            db.execute("UPDATE exports SET status='queued', error=NULL, progress=NULL WHERE status='running'")
+            db.execute("UPDATE exports SET progress=NULL WHERE status='queued'")
         state = self.store.get("runtime")
         if state["running"]:
             state["next_capture_at"] = next_allowed(time.time(), self.settings())
@@ -101,6 +106,8 @@ class Recorder:
                 pass
         # Wait for an in-flight camera thread before releasing ownership.
         async with self.camera_lock:
+            pass
+        async with self.preview_lock:
             pass
         if self.export_task:
             await self.export_task
@@ -253,13 +260,34 @@ class Recorder:
                 "camera_busy": self.camera_lock.locked(), "disk": {"free": disk.free, "total": disk.total},
                 "server_time": time.time()}
 
-    def timeline(self, cutoff=None, offset=0, limit=24, included_only=False):
+    def frame_range(self, db, cutoff, start_frame_id=None, end_frame_id=None):
+        predicate, params = "captured_at<=?", [cutoff]
+        bounds = []
+        for frame_id, operator in ((start_frame_id, ">="), (end_frame_id, "<=")):
+            if frame_id is None:
+                bounds.append(None)
+                continue
+            row = db.execute("SELECT captured_at,id FROM frames WHERE id=? AND captured_at<=?", (frame_id, cutoff)).fetchone()
+            if row is None:
+                raise ValueError("An export range endpoint is no longer available in this timeline. Choose the full range or new endpoints.")
+            bound = (row["captured_at"], row["id"])
+            bounds.append(bound)
+            predicate += f" AND (captured_at,id){operator}(?,?)"
+            params.extend(bound)
+        if all(bound is not None for bound in bounds) and bounds[0] > bounds[1]:
+            raise ValueError("The export range start must be before or equal to its end.")
+        return predicate, params, bounds[0]
+
+    def timeline(self, cutoff=None, offset=0, limit=24, included_only=False, start_frame_id=None, end_frame_id=None):
         cutoff = min(time.time(), cutoff) if cutoff is not None else time.time()
         with self.store.connect() as db:
             db.execute("BEGIN")
             counts = dict(db.execute("SELECT COUNT(*) AS total, COALESCE(SUM(excluded=0),0) AS included, COALESCE(SUM(excluded=1),0) AS excluded FROM frames WHERE captured_at<=?", (cutoff,)).fetchone())
+            predicate, params, start = self.frame_range(db, cutoff, start_frame_id, end_frame_id)
+            range_count = db.execute(f"SELECT COUNT(*) FROM frames WHERE {predicate} AND excluded=0", params).fetchone()[0]
+            range_start = db.execute("SELECT COUNT(*) FROM frames WHERE captured_at<=? AND excluded=0 AND (captured_at,id)<(?,?)", (cutoff, *start)).fetchone()[0] if start else 0
             rows = db.execute("SELECT id,captured_at,excluded, SUM(excluded=0) OVER (ORDER BY captured_at,id ROWS UNBOUNDED PRECEDING)-1 AS video_index FROM frames WHERE captured_at<=? " + ("AND excluded=0 " if included_only else "") + "ORDER BY captured_at,id LIMIT ? OFFSET ?", (cutoff, limit, offset))
-            return {"cutoff": cutoff, **counts, "frames": [dict(row) for row in rows]}
+            return {"cutoff": cutoff, **counts, "range": {"included": range_count, "start_index": range_start, "end_index": range_start + range_count - 1}, "frames": [dict(row) for row in rows]}
 
     def select_frames(self, frame_ids, excluded):
         self.ensure_available()
@@ -278,14 +306,14 @@ class Recorder:
             frame_id = row["id"]
             if not re.fullmatch(r"[0-9a-f]{32}", frame_id):
                 raise RuntimeError("Invalid photo ID in deletion queue")
-            for kind in ("frames", "thumbs"):
+            for kind in ("frames", "thumbs", "previews"):
                 (self.root / kind / f"{frame_id}.jpg").unlink(missing_ok=True)
             with self.store.connect() as db:
                 db.execute("DELETE FROM deleted_frames WHERE id=?", (frame_id,))
 
     async def delete_frame(self, frame_id):
         # Serialize with captures; exports must keep their queued frame snapshots.
-        async with self.camera_lock:
+        async with self.camera_lock, self.preview_lock:
             self.ensure_available()
             if self.store.rows("SELECT id FROM exports WHERE status IN ('queued','running') LIMIT 1"):
                 raise ValueError("Wait for the current video export to finish before deleting photos")
@@ -300,7 +328,44 @@ class Recorder:
             self.cleanup_deleted_frames()
             self.store.event("info", "Photo permanently deleted")
 
-    async def create_export(self, cutoff=None, normalize_lighting=False):
+    def preview_sync(self, frame_id):
+        if not self.store.rows("SELECT id FROM frames WHERE id=?", (frame_id,)):
+            raise KeyError(frame_id)
+        source_path = self.root / "frames" / f"{frame_id}.jpg"
+        target = self.root / "previews" / f"{frame_id}.jpg"
+        if not target.is_file():
+            if not source_path.is_file():
+                raise KeyError(frame_id)
+            self.check_space()
+            temporary = target.with_name(f".{frame_id}.jpg")
+            try:
+                with Image.open(source_path) as source:
+                    # JPEG can decode at reduced resolution before allocating the
+                    # full sensor image; keep enough pixels for the sharp preview.
+                    source.draft("RGB", (1920, 1920))
+                    with ImageOps.exif_transpose(source) as image:
+                        image.thumbnail((1920, 1920), Image.Resampling.LANCZOS)
+                        image.convert("RGB").save(temporary, "JPEG", quality=90)
+                temporary.replace(target)
+            finally:
+                temporary.unlink(missing_ok=True)
+        return target.read_bytes()
+
+    async def preview_frame(self, frame_id):
+        # Bound decoding memory, and finish in-flight work before deleting files.
+        async with self.preview_lock:
+            self.ensure_available()
+            task = asyncio.create_task(asyncio.to_thread(self.preview_sync, frame_id))
+            try:
+                return await asyncio.shield(task)
+            except asyncio.CancelledError:
+                await task
+                raise
+
+    async def create_export(self, cutoff=None, normalize_lighting=False, *, interpolation="none", intermediate_frames=5, fps=None, start_frame_id=None, end_frame_id=None, resolution="project", timing_overlay=False):
+        options = ExportRequest(cutoff=cutoff, normalize_lighting=normalize_lighting,
+                                interpolation=interpolation, intermediate_frames=intermediate_frames, fps=fps,
+                                start_frame_id=start_frame_id, end_frame_id=end_frame_id, resolution=resolution, timing_overlay=timing_overlay)
         self.ensure_available()
         # No await between checking and registering the task: requests cannot overlap here.
         if self.export_task and not self.export_task.done():
@@ -308,16 +373,23 @@ class Recorder:
         self.check_space()
         cutoff = min(time.time(), cutoff) if cutoff is not None else time.time()
         settings = self.settings()
+        settings.export_fps = options.fps or settings.export_fps
+        if options.resolution != "project":
+            settings.width, settings.height = {"720p": (1280, 720), "1080p": (1920, 1080),
+                                               "2160p": (3840, 2160)}[options.resolution]
         with self.store.connect() as db:
             db.execute("BEGIN IMMEDIATE")
-            count = db.execute("SELECT COUNT(*) FROM frames WHERE captured_at<=? AND excluded=0", (cutoff,)).fetchone()[0]
+            predicate, params, _ = self.frame_range(db, cutoff, options.start_frame_id, options.end_frame_id)
+            count = db.execute(f"SELECT COUNT(*) FROM frames WHERE {predicate} AND excluded=0", params).fetchone()[0]
             if not count:
-                raise ValueError("No frames are included in this video. Capture a photo or restore a removed frame.")
-            job = {"id": uuid.uuid4().hex, "created_at": time.time(), "status": "queued", "frames": count, "fps": settings.export_fps, "error": None, "normalize_lighting": normalize_lighting}
-            db.execute("INSERT INTO exports(id,created_at,status,frames,fps,error,settings,snapshot,normalize_lighting) VALUES (:id,:created_at,:status,:frames,:fps,:error,:settings,1,:normalize_lighting)", {**job, "settings": settings.model_dump_json()})
-            db.execute("INSERT INTO export_frames SELECT ?,id FROM frames WHERE captured_at<=? AND excluded=0", (job["id"], cutoff))
+                raise ValueError("No frames are included in this video range. Choose a wider range, capture a photo or restore a removed frame.")
+            job = {"id": uuid.uuid4().hex, "created_at": time.time(), "status": "queued", "frames": count, "fps": settings.export_fps, "error": None, "normalize_lighting": normalize_lighting,
+                   "interpolation": options.interpolation, "intermediate_frames": options.intermediate_frames if options.interpolation != "none" else 0,
+                   "start_frame_id": options.start_frame_id, "end_frame_id": options.end_frame_id, "timing_overlay": options.timing_overlay}
+            db.execute("INSERT INTO exports(id,created_at,status,frames,fps,error,settings,snapshot,normalize_lighting,interpolation,intermediate_frames,start_frame_id,end_frame_id,timing_overlay) VALUES (:id,:created_at,:status,:frames,:fps,:error,:settings,1,:normalize_lighting,:interpolation,:intermediate_frames,:start_frame_id,:end_frame_id,:timing_overlay)", {**job, "settings": settings.model_dump_json()})
+            db.execute(f"INSERT INTO export_frames SELECT ?,id FROM frames WHERE {predicate} AND excluded=0", (job["id"], *params))
         self.export_task = asyncio.create_task(self.run_exports())
-        return job
+        return export_details({**job, "settings": settings.model_dump_json()})
 
     async def run_exports(self):
         while not self.stopping.is_set():
@@ -335,7 +407,7 @@ class Recorder:
                 settings = Settings.model_validate_json(job["settings"]) if job["settings"] else self.settings()
                 settings.export_fps = job["fps"]
                 with self.store.connect() as db:
-                    db.execute("UPDATE exports SET status='running', error=NULL WHERE id=?", (job["id"],))
+                    db.execute("UPDATE exports SET status='running', error=NULL, progress=NULL WHERE id=?", (job["id"],))
                 await asyncio.to_thread(self.export_sync, job, settings)
         finally:
             self.export_gate.release()
@@ -345,9 +417,12 @@ class Recorder:
         manifest = directory / f"{job['id']}.txt"
         temp = directory / f".{job['id']}.mp4"
         log = directory / f".{job['id']}.log"
+        progress_file = directory / f".{job['id']}.progress"
         final = directory / f"{job['id']}.mp4"
         corrected = directory / f".{job['id']}.lighting"
+        overlay = directory / f".{job['id']}.timing.ass"
         deadline = time.monotonic() + 21600
+        progress = ExportProgress(self.store, job['id'])
 
         def check_export():
             if self.stopping.is_set():
@@ -357,28 +432,44 @@ class Recorder:
                 raise RuntimeError("Export exceeded the six-hour time limit")
 
         try:
-            query = "SELECT f.id FROM export_frames e JOIN frames f ON f.id=e.frame_id WHERE e.export_id=? ORDER BY f.captured_at,f.id" if job.get("snapshot") else "SELECT id FROM frames WHERE captured_at<=? ORDER BY captured_at,id"
+            query = "SELECT f.id,f.captured_at FROM export_frames e JOIN frames f ON f.id=e.frame_id WHERE e.export_id=? ORDER BY f.captured_at,f.id" if job.get("snapshot") else "SELECT id,captured_at FROM frames WHERE captured_at<=? ORDER BY captured_at,id"
             rows = self.store.rows(query, (job["id"] if job.get("snapshot") else job["created_at"],))
             if job.get("normalize_lighting"):
                 corrected.mkdir()
                 lighting.prepare_frames([self.root / "frames" / f"{row['id']}.jpg" for row in rows],
-                                        corrected, (settings.width, settings.height), check_export)
+                                        corrected, check_export, progress.report)
             with manifest.open("w") as handle:
                 for row in rows:
                     # Relative paths contain only internally generated hex IDs.
                     path = f"{corrected.name}/{row['id']}.png" if job.get("normalize_lighting") else f"../frames/{row['id']}.jpg"
                     handle.write(f"file '{path}'\n")
+            factor = job.get("intermediate_frames", 0) + 1 if job.get("interpolation", "none") != "none" and job["frames"] > 1 else 1
+            filters = export_filters(job, settings)
+            if job.get("timing_overlay"):
+                bounds = timing_overlay.photo_bounds([self.root / "frames" / f"{row['id']}.jpg" for row in rows], settings, check_export)
+                timing_overlay.write_overlay(overlay, [row['captured_at'] for row in rows], job, settings, check_export, progress.report, bounds)
+                # Escape both filter-option and filtergraph parsing layers.
+                filename = str(overlay.resolve()).replace('\\', '\\\\').replace(':', '\\:').replace("'", "\\'")
+                filename = filename.replace('\\', '\\\\').replace("'", "\\'").replace(',', '\\,').replace(';', '\\;').replace('[', '\\[').replace(']', '\\]')
+                filters += f",subtitles=filename={filename}"
             command = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
-                       "-r", str(job["fps"]), "-f", "concat", "-safe", "0", "-i", str(manifest),
-                       "-vf", f"scale={settings.width}:{settings.height}:force_original_aspect_ratio=decrease,pad={settings.width}:{settings.height}:(ow-iw)/2:(oh-ih)/2,setsar=1",
+                       "-nostats", "-stats_period", "1", "-progress", str(progress_file),
+                       "-r", f"{job['fps']}/{factor}", "-f", "concat", "-safe", "0", "-i", str(manifest),
+                       "-vf", filters, "-r", str(job["fps"]),
                        "-c:v", "libx264", "-threads", "2", "-preset", "fast", "-crf", "20", "-pix_fmt", "yuv420p",
                        "-movflags", "+faststart", str(temp)]
             # Keep FFmpeg errors out of RAM and check the disk reserve during long exports.
-            with log.open("wb") as errors, subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=errors) as process:
+            total = export_details(job)['output_frames']
+            progress.report('encoding', 0, total)
+            reader = FFmpegProgress(progress.report, total)
+            progress_file.touch()
+            with progress_file.open() as updates, log.open("wb") as errors, subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=errors) as process:
                 try:
                     while process.poll() is None:
+                        reader.read(updates)
                         check_export()
                         time.sleep(.5)
+                    reader.read(updates)
                 except BaseException:
                     process.kill()
                     process.wait()
@@ -387,18 +478,21 @@ class Recorder:
                     with log.open("rb") as error_log:
                         error_log.seek(max(0, log.stat().st_size - 1500))
                         raise RuntimeError(error_log.read().decode(errors="replace"))
+            progress.report('finalizing', 0, 0)
             temp.replace(final)
             with self.store.connect() as db:
-                db.execute("UPDATE exports SET status='complete' WHERE id=?", (job["id"],))
-            self.store.event("info", f"MP4 ready: {job['frames']} frames at {job['fps']} fps")
+                db.execute("UPDATE exports SET status='complete', progress=NULL WHERE id=?", (job["id"],))
+            self.store.event("info", f"MP4 ready: {export_details(job)['output_frames']} video frames from {job['frames']} photos at {job['fps']} fps")
         except Exception as exc:
             with self.store.connect() as db:
-                db.execute("UPDATE exports SET status=?, error=? WHERE id=?", ("queued" if isinstance(exc, InterruptedError) else "failed", None if isinstance(exc, InterruptedError) else str(exc), job["id"]))
+                db.execute("UPDATE exports SET status=?, error=?, progress=NULL WHERE id=?", ("queued" if isinstance(exc, InterruptedError) else "failed", None if isinstance(exc, InterruptedError) else str(exc), job["id"]))
             if not isinstance(exc, InterruptedError):
                 self.store.event("error", "Export failed: " + str(exc))
         finally:
             manifest.unlink(missing_ok=True)
             temp.unlink(missing_ok=True)
             log.unlink(missing_ok=True)
+            progress_file.unlink(missing_ok=True)
+            overlay.unlink(missing_ok=True)
             if corrected.exists():
                 shutil.rmtree(corrected)

@@ -12,6 +12,8 @@ let editingKey = null,
   routeVersion = 0;
 let latestKey, previewUrl, testUrl, noticeTimer;
 const deletingProjectIds = new Set();
+const rangeSelections = new Map();
+let exportOptionsProject = null;
 const numeric = [
   "interval_minutes",
   "duration_days",
@@ -234,6 +236,7 @@ function renderProjects() {
     $("project-grid").append(el("div", "No projects yet. Create a project to start recording.", "empty"));
 }
 function renderProject(p) {
+  initExportOptions(p);
   const s = p.settings,
     r = p.runtime,
     [label, cls] = status(p);
@@ -264,8 +267,10 @@ function renderProject(p) {
   $("photo-count").textContent = p.frames.count.toLocaleString();
   $("next-capture-metric").replaceChildren(progressRing(p, "capture"));
   $("completion-metric").replaceChildren(progressRing(p, "completion"));
+  const exportOptions = savedExportOptions(p.id);
   $("video-duration").textContent =
-    `${(p.frames.included / s.export_fps).toFixed(1)} seconds`;
+    `${(outputFrameCount(p.frames.included, exportOptions) / (exportOptions.fps || s.export_fps)).toFixed(2)} seconds`;
+  updateExportEstimate();
   const cameraName = demo
     ? "Demo camera"
     : cameras.find(
@@ -370,6 +375,55 @@ $("delete-project").onclick = (event) => {
   const p = project();
   if (p) deleteProject(p, event.currentTarget);
 };
+function exportTime(seconds) {
+  seconds = Math.max(0, Math.ceil(seconds));
+  if (seconds < 60) return `${seconds} sec`;
+  const minutes = Math.ceil(seconds / 60);
+  if (minutes < 60) return `${minutes} min`;
+  return `${Math.floor(minutes / 60)} hr ${minutes % 60} min`;
+}
+function exportProgressView(job) {
+  const box = el("div", undefined, "export-progress"), state = job.progress;
+  const labels = {
+    analyzing: "Analyzing lighting",
+    normalizing: "Normalizing photos",
+    overlay: "Drawing timing overlay",
+    encoding: ["blend", "motion"].includes(job.interpolation) ? "Interpolating and encoding video" : "Encoding video",
+    finalizing: "Preparing download",
+  };
+  const title = state ? `Step ${state.stage_number} of ${state.stage_count} · ${labels[state.stage] || state.stage}` : "Starting export…";
+  box.append(el("strong", title));
+  const bar = el("progress");
+  bar.max = state?.total || 1;
+  bar.setAttribute("aria-label", title);
+  if (state?.total) {
+    bar.value = state.completed;
+    const unit = ["encoding", "overlay"].includes(state.stage) ? "video frames" : "photos";
+    const count = `${state.completed.toLocaleString()} / ${state.total.toLocaleString()} ${unit} · ${state.percent.toFixed(1)}% of this stage`;
+    bar.setAttribute("aria-valuetext", count);
+    box.append(el("p", count));
+  }
+  box.append(bar);
+  if (!state) {
+    box.append(el("p", "Waiting for progress information…"));
+    return box;
+  }
+  const timing = [`Elapsed: ${exportTime(state.elapsed_seconds)}`];
+  if (state.eta_seconds !== null)
+    timing.push(`About ${exportTime(state.eta_seconds)} left in this stage`);
+  else if (state.stage !== "finalizing")
+    timing.push(state.completed === state.total ? "Finishing this stage…" : "Estimating time remaining…");
+  box.append(el("p", timing.join(" · ")));
+  if (state.seconds_since_progress >= 30 && state.stage !== "finalizing")
+    box.append(el("p", `Last progress ${exportTime(state.seconds_since_progress)} ago. Some frames take longer to process.`, "help"));
+  const next = state.stage === "analyzing" ? "Next: photo normalization, then video rendering."
+    : state.stage === "normalizing" && job.timing_overlay ? "Next: timing overlay, then video rendering."
+    : ["normalizing", "overlay"].includes(state.stage) ? "Next: video rendering; its remaining time will be estimated when it starts."
+    : state.stage === "encoding" ? "The download appears after the video is finalized."
+    : "Frames are ready. Finalizing the MP4 for download…";
+  box.append(el("p", next, "help"));
+  return box;
+}
 function renderExports(jobs, id) {
   $("export-list").replaceChildren();
   exportBusy = jobs.some((j) => ["queued", "running"].includes(j.status));
@@ -389,7 +443,7 @@ function renderExports(jobs, id) {
       el("h3", date(job.created_at)),
       el(
         "p",
-        `${job.frames} photos · ${job.fps} fps · ${(job.frames / job.fps).toFixed(1)} seconds${job.normalize_lighting ? " · Lighting normalized" : ""}`,
+        `${job.frames} photos · ${job.output_frames ?? job.frames} video frames · ${job.fps} fps${job.width && job.height ? ` · ${job.width} × ${job.height}` : ""} · ${(job.duration_seconds ?? job.frames / job.fps).toFixed(2)} seconds${job.start_frame_id || job.end_frame_id ? " · Custom range" : ""}${job.interpolation && job.interpolation !== "none" ? ` · ${job.interpolation === "repeat" ? "Repeat photos" : job.interpolation === "blend" ? "Blend" : "Motion interpolation"}, ${job.intermediate_frames} added per gap` : ""}${job.normalize_lighting ? " · Lighting normalized" : ""}${job.timing_overlay ? " · Elapsed-time rings" : ""}`,
       ),
     );
     if (job.error) info.append(el("p", job.error, "error"));
@@ -399,15 +453,15 @@ function renderExports(jobs, id) {
       link.href = media(id, "exports", `${job.id}.mp4`);
       link.download = "";
       row.append(link);
+    } else if (job.status === "running") {
+      row.append(exportProgressView(job));
     } else
       row.append(
         el(
           "span",
           job.status === "queued"
             ? "Queued"
-            : job.status === "running"
-              ? "Rendering…"
-              : "Failed",
+            : job.status === "cancelled" ? "Cancelled" : "Failed",
           "badge",
         ),
       );
@@ -524,8 +578,9 @@ function updateEstimate() {
   const count = Math.ceil(daily / s.interval_minutes) * s.duration_days;
   const p = project(),
     average = p?.frames.count ? p.frames.bytes / p.frames.count : isDslr(s.camera_device) ? 10000000 : 350000;
+  const options = savedExportOptions(currentId), outputFrames = outputFrameCount(count, options);
   $("estimate").textContent =
-    `Estimated result: ${count.toLocaleString()} photos → ${(count / s.export_fps).toFixed(0)} seconds of video. Approximately ${bytes(count * average)} for original photos, plus thumbnails and videos.`;
+    `Estimated result: ${count.toLocaleString()} photos → ${outputFrames.toLocaleString()} video frames → ${(outputFrames / (options.fps || s.export_fps)).toFixed(2)} seconds using your Videos export options. Approximately ${bytes(count * average)} for original photos, plus thumbnails and videos.`;
 }
 async function refresh() {
   if (refreshing || deletingProjectIds.has(currentId)) return;
@@ -649,9 +704,12 @@ $("export-button").onclick = (event) => {
   const id = currentId;
   action(event.currentTarget, async () => {
     if (!timeline || timeline.id !== id) return;
+    if (!updateExportEstimate() || rangePending || !exportRange.count) return;
     await api(endpoint(id, "exports"), "POST", {
       cutoff: timeline.cutoff,
-      normalize_lighting: $("normalize-lighting").checked,
+      ...videoExportOptions(),
+      start_frame_id: exportRange.start_frame_id,
+      end_frame_id: exportRange.end_frame_id,
     });
     notify("Video queued. The download will appear when it is ready.");
   });
@@ -796,17 +854,162 @@ $("resolution").onchange = () => {
     : "Photos and exported videos will use this resolution. Save settings to apply.";
 };
 
+function savedExportOptions(id) {
+  const fallback = { interpolation: "none", intermediate_frames: 5, fps: null, normalize_lighting: false, timing_overlay: false, resolution: "project" };
+  try {
+    const value = JSON.parse(localStorage.getItem(`video-export-options:${id}`));
+    if (!value || !["none", "repeat", "blend", "motion"].includes(value.interpolation) ||
+        !Number.isInteger(value.intermediate_frames) || value.intermediate_frames < 1 || value.intermediate_frames > 59 ||
+        ![null, 24, 30, 60].includes(value.fps)) return fallback;
+    return { ...value, normalize_lighting: value.normalize_lighting === true, timing_overlay: value.timing_overlay === true,
+      resolution: ["project", "720p", "1080p", "2160p"].includes(value.resolution) ? value.resolution : "project" };
+  } catch { return fallback; }
+}
+function initExportOptions(p) {
+  $("video-export-fps").options[0].textContent = `Project setting (${p.settings.export_fps} fps)`;
+  $("video-export-resolution").options[0].textContent = `Project setting (${p.settings.width} × ${p.settings.height})`;
+  if (exportOptionsProject === p.id) return;
+  exportOptionsProject = p.id;
+  const options = savedExportOptions(p.id);
+  $("smooth-motion").checked = options.interpolation !== "none";
+  $("interpolation-method").value = options.interpolation === "none" ? "repeat" : options.interpolation;
+  $("intermediate-frames").value = options.intermediate_frames;
+  $("video-export-fps").value = options.fps || "";
+  $("video-export-resolution").value = options.resolution;
+  $("normalize-lighting").checked = options.normalize_lighting;
+  $("timing-overlay").checked = options.timing_overlay;
+}
+function videoExportOptions() {
+  return {
+    interpolation: $("smooth-motion").checked ? $("interpolation-method").value : "none",
+    intermediate_frames: $("smooth-motion").checked ? Number($("intermediate-frames").value) : 5,
+    fps: Number($("video-export-fps").value || project()?.settings.export_fps || 24),
+    normalize_lighting: $("normalize-lighting").checked,
+    timing_overlay: $("timing-overlay").checked,
+    resolution: $("video-export-resolution").value,
+  };
+}
+function outputFrameCount(photos, options) {
+  return photos + Math.max(0, photos - 1) * (options.interpolation === "none" ? 0 : options.intermediate_frames);
+}
+function showExportEstimate(text) {
+  // Avoid repeating screen-reader announcements during background polling.
+  if ($("export-estimate").textContent !== text) $("export-estimate").textContent = text;
+}
+function updateExportEstimate() {
+  const smooth = $("smooth-motion").checked;
+  $("interpolation-method").disabled = !smooth;
+  $("intermediate-frames").disabled = !smooth;
+  if (!$("intermediate-frames").checkValidity()) {
+    showExportEstimate("Enter a whole number from 1 to 59 for frames added between photos.");
+    return false;
+  }
+  if (!timeline || timeline.id !== currentId) {
+    showExportEstimate("Open Videos to estimate the selected photos.");
+    return true;
+  }
+  if (rangeInvalid) {
+    showExportEstimate("Choose a valid export range or click Use full range.");
+    return false;
+  }
+  const options = videoExportOptions(), count = exportRange.count;
+  const frames = outputFrameCount(count, options), added = frames - count;
+  const dimensions = { "720p": "1280 × 720", "1080p": "1920 × 1080", "2160p": "3840 × 2160" }[options.resolution] || `${project().settings.width} × ${project().settings.height}`;
+  showExportEstimate(`${count.toLocaleString()} selected photos + ${added.toLocaleString()} generated frames = ${frames.toLocaleString()} video frames · ${(frames / options.fps).toFixed(2)} seconds at ${options.fps} fps · ${dimensions}.${count === 1 && smooth ? " Select at least two photos to generate intermediate frames." : ""}`);
+  return true;
+}
+for (const id of ["smooth-motion", "interpolation-method", "intermediate-frames", "video-export-fps", "video-export-resolution", "normalize-lighting", "timing-overlay"]) {
+  $(id).addEventListener("input", () => {
+    if (currentId && updateExportEstimate()) {
+      const options = videoExportOptions();
+      options.fps = $("video-export-fps").value ? Number($("video-export-fps").value) : null;
+      const amount = Number($("intermediate-frames").value);
+      options.intermediate_frames = Number.isInteger(amount) && amount >= 1 && amount <= 59 ? amount : 5;
+      try { localStorage.setItem(`video-export-options:${currentId}`, JSON.stringify(options)); } catch { /* Storage may be disabled. */ }
+    }
+    updateVideoButtons();
+  });
+}
 let timeline = null, timelinePage = 0, timelineLoading = false, timelineRequest = 0;
+let exportRange = { start: 0, end: -1, count: 0, start_frame_id: null, end_frame_id: null };
+let rangePending = false, rangeInvalid = false, rangeRequest = 0, rangeTimer;
 let selectedFrames = new Set(), frameCache = new Map(), currentFrame = null, frameIndex = 0;
 let playing = false, playTimer, frameRequest = 0, exportBusy = false, selectionBusy = false;
-function stopPlayback() {
+const playbackImages = new Map();
+let sharpTimer, sharpController, sharpUrl, sharpRequest = 0;
+function cancelSharpPreview() {
+  clearTimeout(sharpTimer);
+  sharpController?.abort();
+  sharpController = null;
+  sharpRequest++;
+  if (sharpUrl) URL.revokeObjectURL(sharpUrl);
+  sharpUrl = null;
+}
+function sharpenFrame(frame) {
+  cancelSharpPreview();
+  const request = sharpRequest, version = routeVersion, data = timeline;
+  // Scrubbing should show a frame immediately and decode only the settled image.
+  sharpTimer = setTimeout(async () => {
+    const controller = new AbortController();
+    sharpController = controller;
+    let url;
+    try {
+      const response = await fetch(media(data.id, "previews", `${frame.id}.jpg`), { signal: controller.signal });
+      if (!response.ok) throw new Error("Sharp preview unavailable");
+      url = URL.createObjectURL(await response.blob());
+      const image = new Image();
+      image.src = url;
+      await image.decode();
+      if (request !== sharpRequest || version !== routeVersion || playing || currentFrame?.id !== frame.id) {
+        URL.revokeObjectURL(url);
+        return;
+      }
+      sharpUrl = url;
+      $("timeline-image").src = url;
+    } catch (error) {
+      if (url) URL.revokeObjectURL(url);
+      if (request === sharpRequest && error.name !== "AbortError")
+        notify("The sharp preview could not load. You can still play the preview or open the original photo.", true);
+    } finally {
+      if (sharpController === controller) sharpController = null;
+    }
+  }, 200);
+}
+function playbackImage(frame, data) {
+  const key = `${data.id}/${frame.id}`;
+  if (!playbackImages.has(key)) {
+    const image = new Image();
+    image.src = media(data.id, "thumbs", `${frame.id}.jpg`);
+    const pending = image.decode().then(() => image);
+    playbackImages.set(key, pending);
+    pending.catch(() => {
+      if (playbackImages.get(key) === pending) playbackImages.delete(key);
+    });
+    // Keep a bounded window of decoded images, even for multi-month projects.
+    if (playbackImages.size > 32) playbackImages.delete(playbackImages.keys().next().value);
+  }
+  return playbackImages.get(key);
+}
+function bufferPlayback(index, data) {
+  for (let next = index + 1; next <= Math.min(index + 12, data.included - 1); next++) {
+    const frame = frameCache.get(Math.floor(next / 100))?.[next % 100];
+    if (frame) playbackImage(frame, data).catch(() => {});
+  }
+}
+function stopPlayback(sharpen = false) {
   playing = false;
   clearTimeout(playTimer);
   frameRequest++;
+  cancelSharpPreview();
   $("play-timeline").textContent = "Play preview";
+  if (sharpen && currentFrame && timeline) sharpenFrame(currentFrame);
 }
 function resetTimeline() {
   stopPlayback();
+  clearTimeout(rangeTimer);
+  rangeRequest++;
+  rangePending = rangeInvalid = false;
+  exportRange = { start: 0, end: -1, count: 0, start_frame_id: null, end_frame_id: null };
   timeline = null;
   timelinePage = 0;
   timelineLoading = false;
@@ -814,6 +1017,7 @@ function resetTimeline() {
   exportBusy = false;
   timelineRequest++;
   frameCache.clear();
+  playbackImages.clear();
   selectedFrames.clear();
   currentFrame = null;
   frameIndex = 0;
@@ -826,8 +1030,13 @@ function resetTimeline() {
 }
 function updateVideoButtons() {
   const blocked = !timeline || timelineLoading || selectionBusy;
-  $("export-button").disabled = blocked || exportBusy || !timeline?.included;
-  $("play-timeline").disabled = blocked || !timeline?.included;
+  const validOptions = updateExportEstimate();
+  $("export-button").disabled = blocked || exportBusy || rangePending || !exportRange.count || !validOptions;
+  $("play-timeline").disabled = blocked || rangePending || rangeInvalid || !exportRange.count;
+  for (const id of ["range-start", "range-end", "range-start-number", "range-end-number"])
+    $(id).disabled = blocked || !timeline?.included;
+  $("range-start-current").disabled = $("range-end-current").disabled = blocked || !currentFrame || Boolean(currentFrame.excluded);
+  $("range-reset").disabled = timelineLoading || selectionBusy;
   $("timeline-scrubber").disabled = blocked || !timeline?.included;
   $("frame-back").disabled = blocked || !timeline?.included || frameIndex <= 0;
   $("frame-forward").disabled = blocked || !timeline?.included || frameIndex >= timeline.included - 1;
@@ -842,18 +1051,27 @@ function updateVideoButtons() {
 }
 async function loadTimeline(fresh = false) {
   stopPlayback();
+  clearTimeout(rangeTimer);
+  rangeRequest++;
+  rangePending = false;
   const id = currentId, version = routeVersion, request = ++timelineRequest;
   if (fresh) timelinePage = 0;
   const cutoff = fresh ? "" : `&cutoff=${timeline.cutoff}`;
+  const bounds = savedRangeSelection(id);
+  const rangeQuery = new URLSearchParams(Object.entries(bounds).filter(([, value]) => value !== null));
   const previousIndex = fresh ? 0 : frameIndex;
   timelineLoading = true;
   updateVideoButtons();
   try {
-    const data = await api(endpoint(id, `timeline?limit=24&offset=${timelinePage * 24}${cutoff}`));
+    const data = await api(endpoint(id, `timeline?limit=24&offset=${timelinePage * 24}${cutoff}&${rangeQuery}`));
     if (version !== routeVersion || request !== timelineRequest) return;
     timeline = { ...data, id };
+    exportRange = { ...bounds, start: data.range.start_index, end: data.range.end_index, count: data.range.included };
+    rangeInvalid = false;
+    syncRangeControls();
     selectedFrames.clear();
     frameCache.clear();
+    playbackImages.clear();
     currentFrame = null;
     frameIndex = 0;
     $("frame-original").hidden = true;
@@ -863,10 +1081,13 @@ async function loadTimeline(fresh = false) {
     $("timeline-scrubber").value = 0;
     $("timeline-empty").hidden = Boolean(data.included);
     $("timeline-empty").textContent = data.total ? "All frames are removed. Restore frames below to preview and export." : "No photos yet. Capture a photo from Overview to begin.";
-    $("timeline-summary").textContent = `${data.included.toLocaleString()} frames included · ${data.excluded.toLocaleString()} removed · ${(data.included / project().settings.export_fps).toFixed(1)} seconds at ${project().settings.export_fps} fps. Reviewed through ${date(data.cutoff)}.`;
+    $("timeline-summary").textContent = `${data.included.toLocaleString()} photos included · ${data.excluded.toLocaleString()} removed. Reviewed through ${date(data.cutoff)}. See Export options for the final video estimate.`;
     $("timeline-page").textContent = `Page ${timelinePage + 1} of ${Math.max(1, Math.ceil(data.total / 24))}`;
     renderTimelineFrames();
-    if (data.included) await showVideoFrame(previousIndex);
+    if (data.included) await showVideoFrame(exportRange.count ? Math.max(exportRange.start, Math.min(previousIndex, exportRange.end)) : previousIndex);
+  } catch (error) {
+    if (version === routeVersion && request === timelineRequest) rangeInvalid = true;
+    throw error;
   } finally {
     if (version === routeVersion && request === timelineRequest) {
       timelineLoading = false;
@@ -880,6 +1101,8 @@ function renderTimelineFrames() {
   $("select-page").indeterminate = false;
   for (const [index, frame] of timeline.frames.entries()) {
     const card = el("article", undefined, `timeline-card${frame.excluded ? " removed" : ""}`);
+    card.dataset.videoIndex = frame.video_index;
+    card.dataset.excluded = frame.excluded ? "1" : "0";
     const inspect = el("button"), img = el("img"), label = el("label"), check = el("input");
     inspect.setAttribute("aria-label", `Inspect frame ${timelinePage * 24 + index + 1}`);
     img.src = media(timeline.id, "thumbs", `${frame.id}.jpg`);
@@ -898,13 +1121,16 @@ function renderTimelineFrames() {
     };
     const text = el("span", `Frame ${timelinePage * 24 + index + 1}`);
     text.append(el("small", date(frame.captured_at)), el("small", frame.excluded ? "Removed from video" : "Included in video"));
+    text.append(el("small", "", "range-frame-note"));
     label.append(check, text);
     card.append(inspect, label);
     $("timeline-grid").append(card);
   }
   if (!timeline.total) $("timeline-grid").append(el("div", "Your captured photos will appear here.", "empty"));
+  syncRangeControls();
 }
 function displayFrame(frame, imageSource) {
+  cancelSharpPreview();
   currentFrame = frame;
   frameIndex = Math.max(0, frame.video_index);
   $("timeline-scrubber").value = frameIndex;
@@ -917,6 +1143,7 @@ function displayFrame(frame, imageSource) {
   $("current-frame-label").textContent = `${date(frame.captured_at, project(), {dateStyle: "medium", timeStyle: "medium"})} · ${frame.excluded ? "Removed from video" : "Included in video"}`;
   $("remove-current").textContent = frame.excluded ? "Restore this frame" : "Remove this frame";
   updateVideoButtons();
+  if (!playing) sharpenFrame(frame);
 }
 async function showVideoFrame(index) {
   if (!timeline?.included) return;
@@ -937,9 +1164,9 @@ async function showVideoFrame(index) {
   }
   const frame = frameCache.get(block)[index % 100];
   if (!frame) return;
-  const image = new Image();
-  image.src = media(data.id, "thumbs", `${frame.id}.jpg`);
-  await image.decode();
+  const pendingImage = playbackImage(frame, data);
+  if (playing) bufferPlayback(index, data);
+  const image = await pendingImage;
   if (request !== frameRequest || version !== routeVersion) return;
   frameIndex = index;
   $("timeline-scrubber").value = index;
@@ -952,7 +1179,7 @@ async function playbackStep() {
     const started = performance.now();
     await showVideoFrame(frameIndex);
     if (!playing) return;
-    if (frameIndex >= timeline.included - 1) { stopPlayback(); return; }
+    if (frameIndex >= exportRange.end) { stopPlayback(true); return; }
     playTimer = setTimeout(() => { frameIndex++; playbackStep(); }, Math.max(0, 1000 / project().settings.export_fps - (performance.now() - started)));
   } catch (error) { stopPlayback(); notify(`Preview could not load a frame: ${error.message}`, true); }
 }
@@ -971,6 +1198,100 @@ async function editFrames(ids, excluded) {
   finally { if (version === routeVersion) { selectionBusy = false; updateVideoButtons(); } }
 }
 function timelineAction(callback) { Promise.resolve().then(callback).catch((error) => notify(error.message, true)); }
+function savedRangeSelection(id) {
+  if (rangeSelections.has(id)) return rangeSelections.get(id);
+  const bounds = { start_frame_id: null, end_frame_id: null };
+  try {
+    const saved = JSON.parse(localStorage.getItem(`video-export-range:${id}`));
+    for (const key of Object.keys(bounds))
+      if (typeof saved?.[key] === "string" && /^[0-9a-f]{32}$/.test(saved[key])) bounds[key] = saved[key];
+  } catch { /* Storage may be disabled. */ }
+  rangeSelections.set(id, bounds);
+  return bounds;
+}
+function syncRangeControls() {
+  const total = timeline?.included || 0, max = Math.max(1, total);
+  for (const side of ["start", "end"]) {
+    for (const suffix of ["", "-number"]) {
+      const control = $(`range-${side}${suffix}`);
+      control.max = max;
+      control.value = Math.min(max, Math.max(1, exportRange[side] + 1));
+    }
+  }
+  $("export-range-fill").style.marginLeft = `${total ? exportRange.start / total * 100 : 0}%`;
+  $("export-range-fill").style.width = `${total ? exportRange.count / total * 100 : 0}%`;
+  const text = exportRange.count
+    ? `Export photos ${exportRange.start + 1}–${exportRange.end + 1} of ${total} · ${exportRange.count} photos in range.`
+    : "No included photos in this range. Choose new endpoints or use the full range.";
+  if ($("range-summary").textContent !== text) $("range-summary").textContent = text;
+  for (const card of $("timeline-grid").children) {
+    if (!card.dataset.videoIndex) continue;
+    const index = Number(card.dataset.videoIndex);
+    const outside = card.dataset.excluded === "0" && (!exportRange.count || index < exportRange.start || index > exportRange.end);
+    card.classList.toggle("outside-range", outside);
+    card.querySelector(".range-frame-note").textContent = outside ? "Outside export range" : "";
+  }
+}
+async function rangeFrame(index, data) {
+  const cached = frameCache.get(Math.floor(index / 100))?.[index % 100];
+  if (cached) return cached;
+  const result = await api(endpoint(data.id, `timeline?included_only=true&limit=1&offset=${index}&cutoff=${data.cutoff}`));
+  if (result.included !== data.included || result.excluded !== data.excluded || !result.frames.length)
+    throw new Error("The photo selection changed. Refresh frames before choosing an export range.");
+  return result.frames[0];
+}
+function setExportRange(side, value) {
+  if (!timeline?.included) return;
+  stopPlayback();
+  clearTimeout(rangeTimer);
+  const request = ++rangeRequest, data = timeline, version = routeVersion;
+  rangeInvalid = !Number.isInteger(value) || value < 1 || value > data.included;
+  if (rangeInvalid) {
+    rangePending = false;
+    $("range-summary").textContent = `Enter a photo number from 1 to ${data.included}.`;
+    updateVideoButtons();
+    return;
+  }
+  exportRange[side] = value - 1;
+  if (exportRange.start > exportRange.end) exportRange[side === "start" ? "end" : "start"] = value - 1;
+  exportRange.count = exportRange.end - exportRange.start + 1;
+  rangePending = true;
+  syncRangeControls();
+  updateVideoButtons();
+  // Update the estimate immediately, then resolve stable photo IDs after scrubbing.
+  const start = exportRange.start, end = exportRange.end;
+  rangeTimer = setTimeout(async () => {
+    try {
+      const [first, last] = await Promise.all([rangeFrame(start, data), rangeFrame(end, data)]);
+      if (request !== rangeRequest || version !== routeVersion) return;
+      const bounds = { start_frame_id: start === 0 ? null : first.id, end_frame_id: end === data.included - 1 ? null : last.id };
+      Object.assign(exportRange, bounds);
+      rangeSelections.set(data.id, bounds);
+      try { localStorage.setItem(`video-export-range:${data.id}`, JSON.stringify(bounds)); } catch { /* Storage may be disabled. */ }
+      await showVideoFrame(side === "start" ? start : end);
+    } catch (error) {
+      if (request === rangeRequest && version === routeVersion) {
+        rangeInvalid = true;
+        notify(error.message, true);
+      }
+    } finally {
+      if (request === rangeRequest && version === routeVersion) {
+        rangePending = false;
+        updateVideoButtons();
+      }
+    }
+  }, 150);
+}
+for (const side of ["start", "end"]) {
+  for (const suffix of ["", "-number"])
+    $(`range-${side}${suffix}`).oninput = (event) => setExportRange(side, Number(event.target.value));
+  $(`range-${side}-current`).onclick = () => currentFrame && setExportRange(side, currentFrame.video_index + 1);
+}
+$("range-reset").onclick = () => {
+  rangeSelections.delete(currentId);
+  try { localStorage.removeItem(`video-export-range:${currentId}`); } catch { /* Storage may be disabled. */ }
+  timelineAction(() => loadTimeline(!timeline));
+};
 $("refresh-timeline").onclick = () => timelineAction(() => loadTimeline(true));
 $("timeline-previous").onclick = () => { timelinePage--; timelineAction(() => loadTimeline()); };
 $("timeline-next").onclick = () => { timelinePage++; timelineAction(() => loadTimeline()); };
@@ -986,8 +1307,10 @@ $("remove-selected").onclick = () => editFrames([...selectedFrames], true);
 $("restore-selected").onclick = () => editFrames([...selectedFrames], false);
 $("remove-current").onclick = () => currentFrame && editFrames([currentFrame.id], !currentFrame.excluded);
 $("play-timeline").onclick = () => {
-  if (playing) { stopPlayback(); return; }
-  if (frameIndex >= timeline.included - 1) frameIndex = 0;
+  if (playing) { stopPlayback(true); return; }
+  cancelSharpPreview();
+  frameIndex = Number($("timeline-scrubber").value);
+  if (frameIndex < exportRange.start || frameIndex >= exportRange.end) frameIndex = exportRange.start;
   playing = true;
   $("play-timeline").textContent = "Pause preview";
   playbackStep();

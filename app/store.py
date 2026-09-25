@@ -9,7 +9,7 @@ from .models import Settings
 class Store:
     def __init__(self, root: Path):
         self.root = root
-        for folder in (root, root / "frames", root / "thumbs", root / "exports"):
+        for folder in (root, root / "frames", root / "thumbs", root / "previews", root / "exports"):
             folder.mkdir(parents=True, exist_ok=True)
         self.path = root / "state.sqlite3"
         with self.connect() as db:
@@ -35,6 +35,15 @@ class Store:
                 db.execute("ALTER TABLE exports ADD COLUMN snapshot INTEGER NOT NULL DEFAULT 0")
             if "normalize_lighting" not in {row[1] for row in db.execute("PRAGMA table_info(exports)")}:
                 db.execute("ALTER TABLE exports ADD COLUMN normalize_lighting INTEGER NOT NULL DEFAULT 0")
+            if "timing_overlay" not in {row[1] for row in db.execute("PRAGMA table_info(exports)")}:
+                db.execute("ALTER TABLE exports ADD COLUMN timing_overlay INTEGER NOT NULL DEFAULT 0")
+            if "interpolation" not in {row[1] for row in db.execute("PRAGMA table_info(exports)")}:
+                db.execute("ALTER TABLE exports ADD COLUMN interpolation TEXT NOT NULL DEFAULT 'none'")
+            if "intermediate_frames" not in {row[1] for row in db.execute("PRAGMA table_info(exports)")}:
+                db.execute("ALTER TABLE exports ADD COLUMN intermediate_frames INTEGER NOT NULL DEFAULT 0")
+            for column in ("start_frame_id", "end_frame_id", "progress"):
+                if column not in {row[1] for row in db.execute("PRAGMA table_info(exports)")}:
+                    db.execute(f"ALTER TABLE exports ADD COLUMN {column} TEXT")
             if "excluded" not in {row[1] for row in db.execute("PRAGMA table_info(frames)")}:
                 db.execute("ALTER TABLE frames ADD COLUMN excluded INTEGER NOT NULL DEFAULT 0")
             db.execute("INSERT OR IGNORE INTO kv VALUES ('settings', ?)", (Settings().model_dump_json(),))

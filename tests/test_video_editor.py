@@ -59,7 +59,8 @@ def test_empty_selection_and_invalid_timeline_requests(tmp_path):
 
 @pytest.mark.skipif(not shutil.which('ffmpeg'), reason='FFmpeg required')
 @pytest.mark.parametrize('normalize_lighting', [False, True])
-def test_export_keeps_reviewed_frames_and_settings_across_restart(tmp_path, normalize_lighting):
+@pytest.mark.parametrize('interpolation', ['none', 'repeat', 'blend', 'motion'])
+def test_export_keeps_reviewed_frames_and_settings_across_restart(tmp_path, normalize_lighting, interpolation):
     async def scenario():
         rec = Recorder(tmp_path, True)
         await rec.save_settings(Settings(width=640, height=480, export_fps=2))
@@ -69,7 +70,7 @@ def test_export_keeps_reviewed_frames_and_settings_across_restart(tmp_path, norm
         rec.select_frames([ids[1]], True)
         # Queue behind another export, then interrupt before FFmpeg starts.
         await rec.export_gate.acquire()
-        job = await rec.create_export(cutoff, normalize_lighting=normalize_lighting)
+        job = await rec.create_export(cutoff, normalize_lighting=normalize_lighting, interpolation=interpolation, intermediate_frames=5, fps=4)
         rec.select_frames([ids[1]], False)
         rec.select_frames([ids[0]], True)
         await rec.save_settings(Settings(width=1280, height=720, export_fps=30))
@@ -92,12 +93,16 @@ def test_export_keeps_reviewed_frames_and_settings_across_restart(tmp_path, norm
             result = resumed.store.rows('SELECT * FROM exports')[0]
             assert result['status'] == 'complete', result['error']
             assert bool(result['normalize_lighting']) == normalize_lighting
+            assert result['interpolation'] == interpolation
+            assert result['intermediate_frames'] == (0 if interpolation == 'none' else 5)
             assert not stale.exists()
             probe = subprocess.run(['ffprobe', '-v', 'error', '-show_streams', '-of', 'json', str(tmp_path / 'exports' / f"{job['id']}.mp4")], capture_output=True, check=True)
             stream = json.loads(probe.stdout)['streams'][0]
             assert (stream['width'], stream['height']) == (640, 480)
-            assert int(stream['nb_frames']) == 2
-            assert float(stream['duration']) == pytest.approx(1, abs=.1)
+            expected = 2 if interpolation == 'none' else 7
+            assert int(stream['nb_frames']) == expected
+            assert stream['r_frame_rate'] == '4/1'
+            assert float(stream['duration']) == pytest.approx(expected / 4, abs=.01)
             assert resumed.status()['frames']['count'] == 4
         finally:
             await resumed.stop()
