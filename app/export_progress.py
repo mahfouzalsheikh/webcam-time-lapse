@@ -45,6 +45,9 @@ def progress_details(job, now=None):
     stages = ['analyzing', 'normalizing', 'encoding', 'finalizing'] if job.get('normalize_lighting') else ['encoding', 'finalizing']
     if job.get('timing_overlay'):
         stages.insert(stages.index('encoding'), 'overlay')
+    if job.get('cinematic_focus'):
+        position = stages.index('overlay') if 'overlay' in stages else stages.index('encoding')
+        stages[position:position] = ['focus_analysis', 'focusing']
     return {
         **state,
         'stage_number': stages.index(state['stage']) + 1,

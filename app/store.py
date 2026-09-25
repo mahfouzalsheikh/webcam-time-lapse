@@ -37,6 +37,8 @@ class Store:
                 db.execute("ALTER TABLE exports ADD COLUMN normalize_lighting INTEGER NOT NULL DEFAULT 0")
             if "timing_overlay" not in {row[1] for row in db.execute("PRAGMA table_info(exports)")}:
                 db.execute("ALTER TABLE exports ADD COLUMN timing_overlay INTEGER NOT NULL DEFAULT 0")
+            if "cinematic_focus" not in {row[1] for row in db.execute("PRAGMA table_info(exports)")}:
+                db.execute("ALTER TABLE exports ADD COLUMN cinematic_focus INTEGER NOT NULL DEFAULT 0")
             if "interpolation" not in {row[1] for row in db.execute("PRAGMA table_info(exports)")}:
                 db.execute("ALTER TABLE exports ADD COLUMN interpolation TEXT NOT NULL DEFAULT 'none'")
             if "intermediate_frames" not in {row[1] for row in db.execute("PRAGMA table_info(exports)")}:

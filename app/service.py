@@ -14,7 +14,7 @@ from zoneinfo import ZoneInfo
 
 from PIL import Image, ImageOps
 
-from . import camera, dslr, lighting, timing_overlay
+from . import camera, cinematic, dslr, lighting, timing_overlay
 from .models import ExportRequest, Settings
 from .store import Store
 from .video import export_details, export_filters
@@ -362,10 +362,12 @@ class Recorder:
                 await task
                 raise
 
-    async def create_export(self, cutoff=None, normalize_lighting=False, *, interpolation="none", intermediate_frames=5, fps=None, start_frame_id=None, end_frame_id=None, resolution="project", timing_overlay=False):
+    async def create_export(self, cutoff=None, normalize_lighting=False, *, interpolation="none", intermediate_frames=5, fps=None, start_frame_id=None, end_frame_id=None, resolution="project", timing_overlay=False, cinematic_focus=False):
         options = ExportRequest(cutoff=cutoff, normalize_lighting=normalize_lighting,
                                 interpolation=interpolation, intermediate_frames=intermediate_frames, fps=fps,
-                                start_frame_id=start_frame_id, end_frame_id=end_frame_id, resolution=resolution, timing_overlay=timing_overlay)
+                                start_frame_id=start_frame_id, end_frame_id=end_frame_id, resolution=resolution,
+                                timing_overlay=timing_overlay, cinematic_focus=cinematic_focus)
+        normalize_lighting = options.normalize_lighting or options.cinematic_focus
         self.ensure_available()
         # No await between checking and registering the task: requests cannot overlap here.
         if self.export_task and not self.export_task.done():
@@ -385,8 +387,9 @@ class Recorder:
                 raise ValueError("No frames are included in this video range. Choose a wider range, capture a photo or restore a removed frame.")
             job = {"id": uuid.uuid4().hex, "created_at": time.time(), "status": "queued", "frames": count, "fps": settings.export_fps, "error": None, "normalize_lighting": normalize_lighting,
                    "interpolation": options.interpolation, "intermediate_frames": options.intermediate_frames if options.interpolation != "none" else 0,
-                   "start_frame_id": options.start_frame_id, "end_frame_id": options.end_frame_id, "timing_overlay": options.timing_overlay}
-            db.execute("INSERT INTO exports(id,created_at,status,frames,fps,error,settings,snapshot,normalize_lighting,interpolation,intermediate_frames,start_frame_id,end_frame_id,timing_overlay) VALUES (:id,:created_at,:status,:frames,:fps,:error,:settings,1,:normalize_lighting,:interpolation,:intermediate_frames,:start_frame_id,:end_frame_id,:timing_overlay)", {**job, "settings": settings.model_dump_json()})
+                   "start_frame_id": options.start_frame_id, "end_frame_id": options.end_frame_id, "timing_overlay": options.timing_overlay,
+                   "cinematic_focus": options.cinematic_focus}
+            db.execute("INSERT INTO exports(id,created_at,status,frames,fps,error,settings,snapshot,normalize_lighting,interpolation,intermediate_frames,start_frame_id,end_frame_id,timing_overlay,cinematic_focus) VALUES (:id,:created_at,:status,:frames,:fps,:error,:settings,1,:normalize_lighting,:interpolation,:intermediate_frames,:start_frame_id,:end_frame_id,:timing_overlay,:cinematic_focus)", {**job, "settings": settings.model_dump_json()})
             db.execute(f"INSERT INTO export_frames SELECT ?,id FROM frames WHERE {predicate} AND excluded=0", (job["id"], *params))
         self.export_task = asyncio.create_task(self.run_exports())
         return export_details({**job, "settings": settings.model_dump_json()})
@@ -438,6 +441,8 @@ class Recorder:
                 corrected.mkdir()
                 lighting.prepare_frames([self.root / "frames" / f"{row['id']}.jpg" for row in rows],
                                         corrected, check_export, progress.report)
+                if job.get("cinematic_focus"):
+                    cinematic.prepare_frames([corrected / f"{row['id']}.png" for row in rows], check_export, progress.report)
             with manifest.open("w") as handle:
                 for row in rows:
                     # Relative paths contain only internally generated hex IDs.

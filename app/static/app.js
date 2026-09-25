@@ -388,6 +388,8 @@ function exportProgressView(job) {
     analyzing: "Analyzing lighting",
     normalizing: "Normalizing photos",
     overlay: "Drawing timing overlay",
+    focus_analysis: "Finding changing areas",
+    focusing: "Applying cinematic focus",
     encoding: ["blend", "motion"].includes(job.interpolation) ? "Interpolating and encoding video" : "Encoding video",
     finalizing: "Preparing download",
   };
@@ -417,8 +419,10 @@ function exportProgressView(job) {
   if (state.seconds_since_progress >= 30 && state.stage !== "finalizing")
     box.append(el("p", `Last progress ${exportTime(state.seconds_since_progress)} ago. Some frames take longer to process.`, "help"));
   const next = state.stage === "analyzing" ? "Next: photo normalization, then video rendering."
-    : state.stage === "normalizing" && job.timing_overlay ? "Next: timing overlay, then video rendering."
-    : ["normalizing", "overlay"].includes(state.stage) ? "Next: video rendering; its remaining time will be estimated when it starts."
+    : state.stage === "normalizing" && job.cinematic_focus ? "Next: cinematic focus, then video rendering."
+    : state.stage === "focus_analysis" ? "Next: softening the background while keeping changing areas sharp."
+    : ["normalizing", "focusing"].includes(state.stage) && job.timing_overlay ? "Next: timing overlay, then video rendering."
+    : ["normalizing", "focusing", "overlay"].includes(state.stage) ? "Next: video rendering; its remaining time will be estimated when it starts."
     : state.stage === "encoding" ? "The download appears after the video is finalized."
     : "Frames are ready. Finalizing the MP4 for download…";
   box.append(el("p", next, "help"));
@@ -443,7 +447,7 @@ function renderExports(jobs, id) {
       el("h3", date(job.created_at)),
       el(
         "p",
-        `${job.frames} photos · ${job.output_frames ?? job.frames} video frames · ${job.fps} fps${job.width && job.height ? ` · ${job.width} × ${job.height}` : ""} · ${(job.duration_seconds ?? job.frames / job.fps).toFixed(2)} seconds${job.start_frame_id || job.end_frame_id ? " · Custom range" : ""}${job.interpolation && job.interpolation !== "none" ? ` · ${job.interpolation === "repeat" ? "Repeat photos" : job.interpolation === "blend" ? "Blend" : "Motion interpolation"}, ${job.intermediate_frames} added per gap` : ""}${job.normalize_lighting ? " · Lighting normalized" : ""}${job.timing_overlay ? " · Elapsed-time rings" : ""}`,
+        `${job.frames} photos · ${job.output_frames ?? job.frames} video frames · ${job.fps} fps${job.width && job.height ? ` · ${job.width} × ${job.height}` : ""} · ${(job.duration_seconds ?? job.frames / job.fps).toFixed(2)} seconds${job.start_frame_id || job.end_frame_id ? " · Custom range" : ""}${job.interpolation && job.interpolation !== "none" ? ` · ${job.interpolation === "repeat" ? "Repeat photos" : job.interpolation === "blend" ? "Blend" : "Motion interpolation"}, ${job.intermediate_frames} added per gap` : ""}${job.normalize_lighting ? " · Lighting normalized" : ""}${job.timing_overlay ? " · Elapsed-time rings" : ""}${job.cinematic_focus ? " · Cinematic focus" : ""}`,
       ),
     );
     if (job.error) info.append(el("p", job.error, "error"));
@@ -855,13 +859,13 @@ $("resolution").onchange = () => {
 };
 
 function savedExportOptions(id) {
-  const fallback = { interpolation: "none", intermediate_frames: 5, fps: null, normalize_lighting: false, timing_overlay: false, resolution: "project" };
+  const fallback = { interpolation: "none", intermediate_frames: 5, fps: null, normalize_lighting: false, timing_overlay: false, cinematic_focus: false, resolution: "project" };
   try {
     const value = JSON.parse(localStorage.getItem(`video-export-options:${id}`));
     if (!value || !["none", "repeat", "blend", "motion"].includes(value.interpolation) ||
         !Number.isInteger(value.intermediate_frames) || value.intermediate_frames < 1 || value.intermediate_frames > 59 ||
         ![null, 24, 30, 60].includes(value.fps)) return fallback;
-    return { ...value, normalize_lighting: value.normalize_lighting === true, timing_overlay: value.timing_overlay === true,
+    return { ...value, normalize_lighting: value.normalize_lighting === true, timing_overlay: value.timing_overlay === true, cinematic_focus: value.cinematic_focus === true,
       resolution: ["project", "720p", "1080p", "2160p"].includes(value.resolution) ? value.resolution : "project" };
   } catch { return fallback; }
 }
@@ -878,14 +882,16 @@ function initExportOptions(p) {
   $("video-export-resolution").value = options.resolution;
   $("normalize-lighting").checked = options.normalize_lighting;
   $("timing-overlay").checked = options.timing_overlay;
+  $("cinematic-focus").checked = options.cinematic_focus;
 }
 function videoExportOptions() {
   return {
     interpolation: $("smooth-motion").checked ? $("interpolation-method").value : "none",
     intermediate_frames: $("smooth-motion").checked ? Number($("intermediate-frames").value) : 5,
     fps: Number($("video-export-fps").value || project()?.settings.export_fps || 24),
-    normalize_lighting: $("normalize-lighting").checked,
+    normalize_lighting: $("normalize-lighting").checked || $("cinematic-focus").checked,
     timing_overlay: $("timing-overlay").checked,
+    cinematic_focus: $("cinematic-focus").checked,
     resolution: $("video-export-resolution").value,
   };
 }
@@ -897,6 +903,9 @@ function showExportEstimate(text) {
   if ($("export-estimate").textContent !== text) $("export-estimate").textContent = text;
 }
 function updateExportEstimate() {
+  const cinematic = $("cinematic-focus").checked;
+  $("normalize-lighting").disabled = cinematic;
+  if (cinematic) $("normalize-lighting").checked = true;
   const smooth = $("smooth-motion").checked;
   $("interpolation-method").disabled = !smooth;
   $("intermediate-frames").disabled = !smooth;
@@ -918,7 +927,7 @@ function updateExportEstimate() {
   showExportEstimate(`${count.toLocaleString()} selected photos + ${added.toLocaleString()} generated frames = ${frames.toLocaleString()} video frames · ${(frames / options.fps).toFixed(2)} seconds at ${options.fps} fps · ${dimensions}.${count === 1 && smooth ? " Select at least two photos to generate intermediate frames." : ""}`);
   return true;
 }
-for (const id of ["smooth-motion", "interpolation-method", "intermediate-frames", "video-export-fps", "video-export-resolution", "normalize-lighting", "timing-overlay"]) {
+for (const id of ["smooth-motion", "interpolation-method", "intermediate-frames", "video-export-fps", "video-export-resolution", "normalize-lighting", "timing-overlay", "cinematic-focus"]) {
   $(id).addEventListener("input", () => {
     if (currentId && updateExportEstimate()) {
       const options = videoExportOptions();

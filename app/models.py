@@ -67,6 +67,7 @@ class ExportRequest(BaseModel):
     end_frame_id: FrameId | None = None
     normalize_lighting: bool = False
     timing_overlay: bool = False
+    cinematic_focus: bool = False
     interpolation: Literal["none", "repeat", "blend", "motion"] = "none"
     intermediate_frames: int = Field(default=5, ge=1, le=59)
     fps: int | None = Field(default=None, ge=1, le=60)
