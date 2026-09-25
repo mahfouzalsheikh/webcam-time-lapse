@@ -32,20 +32,28 @@ def camera_filters(job, settings, target, bounds):
     height = 2 * floor((top + height) / 2) - y
     if min(width, height) < 2:
         return ""
-    fraction = f"min(on/{frames - 1},1)"
+    # Perspective counts output frames from one, unlike zoompan's zero-based on.
+    fraction = f"clip((on-1)/{frames - 1},0,1)"
     ease = f"({fraction}*{fraction}*(3-2*{fraction}))"
     tx, ty = (max(0., min(1., value)) for value in target)
-    # One output per input, including repeated/interpolated frames. Bound the
-    # view to 1.00–1.20x and ease both ends; pan is limited to the available crop.
-    zoom = f"1+0.2*{ease}"
-    pan_x = f"clip(iw*(0.5+({tx:.6f}-0.5)*{ease})-iw/(2*zoom),0,iw-iw/zoom)"
-    pan_y = f"clip(ih*(0.5+({ty:.6f}-0.5)*{ease})-ih/(2*zoom),0,ih-ih/zoom)"
-    # 4:4:4 avoids chroma-grid jumps; modest supersampling smooths subpixel pans
-    # at HD without allocating oversized 8K/16K working frames for 4K exports.
-    sampling = 2 if max(width, height) <= 1920 else 1
+    # Clamp the destination view once, then ease all four source corners toward
+    # it. This keeps the path inside the photo without hitting a pan limit partway
+    # through the move. The final view is 1/1.2 of the original in both dimensions.
+    inset = 1 - 1 / 1.2
+    end_x = max(0., min(inset, tx - 1 / 2.4))
+    end_y = max(0., min(inset, ty - 1 / 2.4))
+    left_edge = f"W*{end_x:.12f}*{ease}"
+    right_edge = f"W*(1-{inset - end_x:.12f}*{ease})"
+    top_edge = f"H*{end_y:.12f}*{ease}"
+    bottom_edge = f"H*(1-{inset - end_y:.12f}*{ease})"
+    # zoompan rounds crop positions and dimensions to whole pixels, even with
+    # supersampling. Perspective's cubic resampler retains fractional coordinates
+    # for a smooth affine pan/zoom at every resolution, one output per input.
+    # 4:4:4 also keeps color planes on the same sampling grid during the transform.
     return (f",crop={width}:{height}:{x}:{y},format=yuv444p,"
-            f"scale={width * sampling}:{height * sampling}:flags=lanczos,"
-            f"zoompan=z='{zoom}':x='{pan_x}':y='{pan_y}':d=1:s={width}x{height}:fps={job['fps']},"
+            f"perspective=x0='{left_edge}':y0='{top_edge}':"
+            f"x1='{right_edge}':y1='{top_edge}':x2='{left_edge}':y2='{bottom_edge}':"
+            f"x3='{right_edge}':y3='{bottom_edge}':sense=source:eval=frame:interpolation=cubic,"
             f"pad={settings.width}:{settings.height}:{x}:{y},setsar=1")
 
 

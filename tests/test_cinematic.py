@@ -206,4 +206,50 @@ def test_still_scene_gets_centered_camera_target_and_single_frame_stays_still(tm
     Image.new('RGB', (320, 240), (100, 120, 140)).save(path)
     assert cinematic.prepare_frames([path], lambda: None) == (.5, .5)
     job = dict(frames=1, fps=24, interpolation='repeat', intermediate_frames=5, cinematic_focus=True)
-    assert 'zoompan' not in export_filters(job, Settings(width=320, height=240))
+    assert export_filters(job, Settings(width=320, height=240)) == export_filters(
+        {**job, 'cinematic_focus': False}, Settings(width=320, height=240))
+
+
+@pytest.mark.skipif(not shutil.which('ffmpeg'), reason='FFmpeg required')
+@pytest.mark.parametrize('target', [(.8, .5), (.2, .8), (.5, .5)])
+def test_slow_camera_move_follows_subpixel_path_without_crop_jitter(tmp_path, target):
+    from math import sqrt
+    from app.video import export_filters
+
+    # Hold identical captures long enough that each camera step is less than a
+    # pixel. Integer crop rounding used to cause jumps and even reverse the pan.
+    image = Image.new('RGB', (320, 240), (32, 32, 32))
+    ImageDraw.Draw(image).rectangle((135, 90, 185, 150), fill=(224, 224, 224))
+    for i in range(2):
+        image.save(tmp_path / f'{i}.png')
+    job = dict(frames=2, fps=30, interpolation='repeat', intermediate_frames=179, cinematic_focus=True)
+    raw = subprocess.check_output([
+        'ffmpeg', '-v', 'error', '-framerate', '30/180', '-i', str(tmp_path / '%d.png'),
+        '-vf', export_filters(job, Settings(width=320, height=240), target),
+        '-f', 'rawvideo', '-pix_fmt', 'gray', '-threads', '1', '-'])
+    stride = 320 * 240
+    assert len(raw) == 181 * stride
+    for n in range(181):
+        pixels = raw[n * stride:(n + 1) * stride]
+        columns = [0] * 320
+        rows = [0] * 240
+        for y in range(50, 200):
+            for x in range(60, 250):
+                weight = max(0, pixels[y * 320 + x] - 32)
+                columns[x] += weight
+                rows[y] += weight
+        t = n / 180
+        ease = t * t * (3 - 2 * t)
+        scale = 1 / (1 - ease / 6)
+        for weights, size, center, span, destination in zip(
+                (columns, rows), (320, 240), (160, 120), (51, 61), target):
+            total = sum(weights)
+            actual_center = sum(i * w for i, w in enumerate(weights)) / total
+            end_offset = size * max(0, min(1 / 6, destination - 5 / 12))
+            expected_center = (center - end_offset * ease) * scale
+            assert actual_center == pytest.approx(expected_center, abs=.08)
+            # Track size as well as position, catching uneven zoom even when the
+            # subject stays centered. Weighted moments measure fractional pixels.
+            spread = sqrt(sum((i - actual_center) ** 2 * w for i, w in enumerate(weights)) / total)
+            expected_spread = sqrt((span ** 2 - 1) / 12) * scale
+            assert spread == pytest.approx(expected_spread, abs=.08)
