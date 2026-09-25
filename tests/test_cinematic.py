@@ -151,3 +151,59 @@ def test_failed_focus_export_removes_temporary_files(tmp_path, failure, status):
         assert job['status'] == status and job['progress'] is None
         assert not list((tmp_path / 'exports').iterdir())
     asyncio.run(scenario())
+
+
+@pytest.mark.skipif(not shutil.which('ffmpeg'), reason='FFmpeg required')
+@pytest.mark.parametrize('portrait', [False, True])
+def test_camera_move_is_visible_on_repeated_stills_bounded_and_keeps_rings_fixed(tmp_path, portrait):
+    from app.video import export_filters
+    from app.timing_overlay import write_overlay
+
+    width = 160 if portrait else 320
+    image = Image.new('RGB', (width, 240), (40, 60, 80))
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((width // 2 - 20, 90, width // 2 + 20, 130), fill=(230, 230, 230))
+    for i in range(2):
+        image.save(tmp_path / f'{i}.png')
+    settings = Settings(width=320, height=240)
+    bounds = ((320 - width) // 2, 0, width, 240)
+    job = dict(frames=2, fps=30, interpolation='repeat', intermediate_frames=59, cinematic_focus=True)
+    overlay = tmp_path / 'clock.ass'
+    write_overlay(overlay, [100, 100], job, settings, lambda: None, content_bounds=bounds)
+    filters = export_filters(job, settings, (.8, .5), bounds)
+    filters += f',subtitles={overlay}'
+    raw = subprocess.check_output(['ffmpeg', '-v', 'error', '-framerate', '30/60', '-i', str(tmp_path / '%d.png'),
+                                   '-vf', filters, '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-threads', '1', '-'])
+    stride = 320 * 240 * 3
+    frames = [Image.frombytes('RGB', (320, 240), raw[n:n + stride]) for n in range(0, len(raw), stride)]
+    assert len(frames) == 61
+    # Frames 10 and 40 are copies of the same capture, yet camera motion differs.
+    assert frames[10].tobytes() != frames[40].tobytes()
+    boxes = []
+    for frame in frames:
+        # Isolate the bright subject below the overlay, avoiding its text.
+        mask = frame.crop((0, 70, 320, 180)).convert('L').point(lambda p: 255 if p > 180 else 0)
+        boxes.append(mask.getbbox())
+    widths = [box[2] - box[0] for box in boxes]
+    assert widths[-1] / widths[0] == pytest.approx(1.2, abs=.05)
+    centers = [(box[0] + box[2]) / 2 for box in boxes]
+    assert centers[-1] < centers[0] - 10  # Explicit pan toward the right-hand target.
+    assert max(abs(b - a) for a, b in zip(centers, centers[1:])) <= 2
+    assert all(b <= a + .5 for a, b in zip(centers, centers[1:]))
+    left = bounds[0]
+    dial = (left, 0, left + 65, 65)
+    assert all(frame.crop(dial).tobytes() == frames[0].crop(dial).tobytes() for frame in frames)
+    if portrait:
+        for frame in frames:
+            assert frame.crop((0, 0, 80, 240)).getbbox() is None
+            assert frame.crop((240, 0, 320, 240)).getbbox() is None
+
+
+def test_still_scene_gets_centered_camera_target_and_single_frame_stays_still(tmp_path):
+    from app.video import export_filters
+
+    path = tmp_path / 'still.png'
+    Image.new('RGB', (320, 240), (100, 120, 140)).save(path)
+    assert cinematic.prepare_frames([path], lambda: None) == (.5, .5)
+    job = dict(frames=1, fps=24, interpolation='repeat', intermediate_frames=5, cinematic_focus=True)
+    assert 'zoompan' not in export_filters(job, Settings(width=320, height=240))

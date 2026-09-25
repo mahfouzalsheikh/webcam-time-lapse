@@ -61,3 +61,10 @@ def prepare_frames(paths, check, progress=None):
             finally:
                 temporary.unlink(missing_ok=True)
         report('focusing', index, len(paths))
+    # A single target for the whole camera move avoids chasing individual leaves
+    # or jumping between captures. Still scenes get a visible centered push-in.
+    bounds = mask.point(lambda value: 255 if value >= 128 else 0).getbbox() if mask else None
+    if bounds:
+        left, top, right, bottom = bounds
+        return (left + right) / (2 * mask.width), (top + bottom) / (2 * mask.height)
+    return .5, .5

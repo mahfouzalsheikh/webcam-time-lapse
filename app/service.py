@@ -437,21 +437,24 @@ class Recorder:
         try:
             query = "SELECT f.id,f.captured_at FROM export_frames e JOIN frames f ON f.id=e.frame_id WHERE e.export_id=? ORDER BY f.captured_at,f.id" if job.get("snapshot") else "SELECT id,captured_at FROM frames WHERE captured_at<=? ORDER BY captured_at,id"
             rows = self.store.rows(query, (job["id"] if job.get("snapshot") else job["created_at"],))
+            cinematic_target = (.5, .5)
             if job.get("normalize_lighting"):
                 corrected.mkdir()
                 lighting.prepare_frames([self.root / "frames" / f"{row['id']}.jpg" for row in rows],
                                         corrected, check_export, progress.report)
                 if job.get("cinematic_focus"):
-                    cinematic.prepare_frames([corrected / f"{row['id']}.png" for row in rows], check_export, progress.report)
+                    cinematic_target = cinematic.prepare_frames([corrected / f"{row['id']}.png" for row in rows], check_export, progress.report)
             with manifest.open("w") as handle:
                 for row in rows:
                     # Relative paths contain only internally generated hex IDs.
                     path = f"{corrected.name}/{row['id']}.png" if job.get("normalize_lighting") else f"../frames/{row['id']}.jpg"
                     handle.write(f"file '{path}'\n")
             factor = job.get("intermediate_frames", 0) + 1 if job.get("interpolation", "none") != "none" and job["frames"] > 1 else 1
-            filters = export_filters(job, settings)
-            if job.get("timing_overlay"):
+            bounds = None
+            if job.get("timing_overlay") or job.get("cinematic_focus"):
                 bounds = timing_overlay.photo_bounds([self.root / "frames" / f"{row['id']}.jpg" for row in rows], settings, check_export)
+            filters = export_filters(job, settings, cinematic_target, bounds)
+            if job.get("timing_overlay"):
                 timing_overlay.write_overlay(overlay, [row['captured_at'] for row in rows], job, settings, check_export, progress.report, bounds)
                 # Escape both filter-option and filtergraph parsing layers.
                 filename = str(overlay.resolve()).replace('\\', '\\\\').replace(':', '\\:').replace("'", "\\'")

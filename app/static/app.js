@@ -447,7 +447,7 @@ function renderExports(jobs, id) {
       el("h3", date(job.created_at)),
       el(
         "p",
-        `${job.frames} photos · ${job.output_frames ?? job.frames} video frames · ${job.fps} fps${job.width && job.height ? ` · ${job.width} × ${job.height}` : ""} · ${(job.duration_seconds ?? job.frames / job.fps).toFixed(2)} seconds${job.start_frame_id || job.end_frame_id ? " · Custom range" : ""}${job.interpolation && job.interpolation !== "none" ? ` · ${job.interpolation === "repeat" ? "Repeat photos" : job.interpolation === "blend" ? "Blend" : "Motion interpolation"}, ${job.intermediate_frames} added per gap` : ""}${job.normalize_lighting ? " · Lighting normalized" : ""}${job.timing_overlay ? " · Elapsed-time rings" : ""}${job.cinematic_focus ? " · Cinematic focus" : ""}`,
+        `${job.frames} photos · ${job.output_frames ?? job.frames} video frames · ${job.fps} fps${job.width && job.height ? ` · ${job.width} × ${job.height}` : ""} · ${(job.duration_seconds ?? job.frames / job.fps).toFixed(2)} seconds${job.start_frame_id || job.end_frame_id ? " · Custom range" : ""}${job.interpolation && job.interpolation !== "none" ? ` · ${job.interpolation === "repeat" ? "Repeat photos" : job.interpolation === "blend" ? "Blend" : "Motion interpolation"}, ${job.intermediate_frames} added per gap` : ""}${job.normalize_lighting ? " · Lighting normalized" : ""}${job.timing_overlay ? " · Elapsed-time rings" : ""}${job.cinematic_focus ? " · Cinematic" : ""}`,
       ),
     );
     if (job.error) info.append(el("p", job.error, "error"));
