@@ -58,9 +58,10 @@ function status(p) {
         ? ["Paused", ""]
         : ["Ready", ""];
 }
-async function api(path, method = "GET", body) {
+async function api(path, method = "GET", body, signal) {
   const response = await fetch(`/api/${path}`, {
     method,
+    signal,
     headers: method === "GET" ? {} : { "Content-Type": "application/json" },
     body: method === "GET" ? undefined : JSON.stringify(body ?? {}),
   });
@@ -449,7 +450,7 @@ function renderExports(jobs, id) {
       el("h3", date(job.created_at)),
       el(
         "p",
-        `${job.frames} photos · ${job.output_frames ?? job.frames} video frames · ${job.fps} fps${job.width && job.height ? ` · ${job.width} × ${job.height}` : ""} · ${(job.duration_seconds ?? job.frames / job.fps).toFixed(2)} seconds${job.start_frame_id || job.end_frame_id ? " · Custom range" : ""}${job.interpolation && job.interpolation !== "none" ? ` · ${job.interpolation === "repeat" ? "Repeat photos" : job.interpolation === "blend" ? "Blend" : "Motion interpolation"}, ${job.intermediate_frames} added per gap` : ""}${job.normalize_lighting ? " · Lighting normalized" : ""}${job.timing_overlay ? " · Elapsed-time rings" : ""}${job.cinematic_focus ? ` · Cinematic, ${job.cinematic_zoom_percent ?? 20}% zoom` : ""}`,
+        `${job.frames} photos · ${job.output_frames ?? job.frames} video frames · ${job.fps} fps${job.width && job.height ? ` · ${job.width} × ${job.height}` : ""} · ${(job.duration_seconds ?? job.frames / job.fps).toFixed(2)} seconds${job.start_frame_id || job.end_frame_id ? " · Custom range" : ""}${job.interpolation && job.interpolation !== "none" ? ` · ${job.interpolation === "repeat" ? "Repeat photos" : job.interpolation === "blend" ? "Blend" : "Motion interpolation"}, ${job.intermediate_frames} added per gap` : ""}${job.normalize_lighting ? " · Lighting normalized" : ""}${job.timing_overlay ? " · Elapsed-time rings" : ""}${job.cinematic_focus ? ` · Cinematic, ${job.cinematic_zoom_percent ?? 20}% zoom, ${job.cinematic_reset_threshold ?? 45}% reset threshold` : ""}`,
       ),
     );
     if (job.error) info.append(el("p", job.error, "error"));
@@ -861,7 +862,7 @@ $("resolution").onchange = () => {
 };
 
 function savedExportOptions(id) {
-  const fallback = { interpolation: "none", intermediate_frames: 5, fps: null, normalize_lighting: false, timing_overlay: false, cinematic_focus: false, cinematic_zoom_percent: 20, resolution: "project" };
+  const fallback = { interpolation: "none", intermediate_frames: 5, fps: null, normalize_lighting: false, timing_overlay: false, cinematic_focus: false, cinematic_zoom_percent: 20, cinematic_reset_threshold: 45, resolution: "project" };
   try {
     const value = JSON.parse(localStorage.getItem(`video-export-options:${id}`));
     if (!value || !["none", "repeat", "blend", "motion"].includes(value.interpolation) ||
@@ -869,6 +870,7 @@ function savedExportOptions(id) {
         ![null, 24, 30, 60].includes(value.fps)) return fallback;
     return { ...value, normalize_lighting: value.normalize_lighting === true, timing_overlay: value.timing_overlay === true, cinematic_focus: value.cinematic_focus === true,
       cinematic_zoom_percent: Number.isInteger(value.cinematic_zoom_percent) && value.cinematic_zoom_percent >= 0 && value.cinematic_zoom_percent <= 100 ? value.cinematic_zoom_percent : 20,
+      cinematic_reset_threshold: Number.isInteger(value.cinematic_reset_threshold) && value.cinematic_reset_threshold >= 0 && value.cinematic_reset_threshold <= 100 ? value.cinematic_reset_threshold : 45,
       resolution: ["project", "720p", "1080p", "2160p"].includes(value.resolution) ? value.resolution : "project" };
   } catch { return fallback; }
 }
@@ -887,6 +889,7 @@ function initExportOptions(p) {
   $("timing-overlay").checked = options.timing_overlay;
   $("cinematic-focus").checked = options.cinematic_focus;
   $("cinematic-zoom-percent").value = options.cinematic_zoom_percent;
+  $("cinematic-reset-threshold").value = options.cinematic_reset_threshold;
 }
 function videoExportOptions() {
   return {
@@ -897,6 +900,7 @@ function videoExportOptions() {
     timing_overlay: $("timing-overlay").checked,
     cinematic_focus: $("cinematic-focus").checked,
     cinematic_zoom_percent: Number($("cinematic-zoom-percent").value),
+    cinematic_reset_threshold: Number($("cinematic-reset-threshold").value),
     resolution: $("video-export-resolution").value,
   };
 }
@@ -907,8 +911,70 @@ function showExportEstimate(text) {
   // Avoid repeating screen-reader announcements during background polling.
   if ($("export-estimate").textContent !== text) $("export-estimate").textContent = text;
 }
+let cinematicAnalysisKey = null, cinematicAnalysisData = null;
+let cinematicAnalysisTimer, cinematicAnalysisController;
+function clearCinematicAnalysis() {
+  clearTimeout(cinematicAnalysisTimer);
+  cinematicAnalysisController?.abort();
+  cinematicAnalysisController = null;
+  cinematicAnalysisKey = cinematicAnalysisData = null;
+}
+function renderCinematicResetCount() {
+  const threshold = Number($("cinematic-reset-threshold").value);
+  const photos = cinematicAnalysisData.changes
+    .filter((change) => change.orientation_change || change.score_percent >= threshold)
+    .map((change) => change.photo);
+  const locations = photos.length ? ` Before selected photo${photos.length === 1 ? "" : "s"} ${photos.slice(0, 8).join(", ")}${photos.length > 8 ? ", …" : ""}.` : "";
+  $("cinematic-reset-count").textContent = Number($("cinematic-zoom-percent").value) === 0
+    ? `${photos.length} angle changes detected; zoom is off at 0%.${locations}`
+    : `${photos.length} zoom reset${photos.length === 1 ? "" : "s"} detected in ${cinematicAnalysisData.frames} selected photos.${locations}`;
+}
+function updateCinematicResetAnalysis() {
+  const enabled = $("cinematic-focus").checked;
+  $("cinematic-reset-threshold").disabled = !enabled;
+  $("cinematic-reset-value").textContent = `${$("cinematic-reset-threshold").value}%`;
+  if (!enabled || tab !== "videos" || !timeline || timeline.id !== currentId || timelineLoading || rangePending || rangeInvalid) {
+    clearCinematicAnalysis();
+    $("cinematic-reset-count").textContent = !enabled
+      ? "Enable cinematic motion to calculate zoom resets."
+      : "Choose an export range to calculate zoom resets.";
+    return;
+  }
+  const payload = { cutoff: timeline.cutoff, start_frame_id: exportRange.start_frame_id, end_frame_id: exportRange.end_frame_id };
+  // Recheck selections after timeline refresh/removal, but reuse the analysis
+  // for slider changes. The server independently caches immutable photo IDs.
+  const key = JSON.stringify([currentId, timelineRequest, payload]);
+  if (key === cinematicAnalysisKey) {
+    if (cinematicAnalysisData) renderCinematicResetCount();
+    return;
+  }
+  clearCinematicAnalysis();
+  cinematicAnalysisKey = key;
+  if (exportRange.count < 2) {
+    cinematicAnalysisData = { frames: exportRange.count, changes: [] };
+    renderCinematicResetCount();
+    return;
+  }
+  $("cinematic-reset-count").textContent = "Analyzing selected photos… Slider updates will be instant once this finishes.";
+  const id = currentId;
+  cinematicAnalysisTimer = setTimeout(async () => {
+    const controller = new AbortController();
+    cinematicAnalysisController = controller;
+    try {
+      const data = await api(endpoint(id, "cinematic-analysis"), "POST", payload, controller.signal);
+      if (cinematicAnalysisKey !== key || controller.signal.aborted) return;
+      cinematicAnalysisData = data;
+      renderCinematicResetCount();
+    } catch (error) {
+      if (cinematicAnalysisKey !== key || controller.signal.aborted) return;
+      cinematicAnalysisKey = null;
+      $("cinematic-reset-count").textContent = `Could not calculate resets: ${error.message}`;
+    }
+  }, 300);
+}
 function updateExportEstimate() {
   const cinematic = $("cinematic-focus").checked;
+  updateCinematicResetAnalysis();
   $("cinematic-zoom-percent").disabled = !cinematic;
   if (cinematic && !$("cinematic-zoom-percent").checkValidity()) {
     showExportEstimate("Enter a whole number from 0 to 100 for the cinematic zoom increase.");
@@ -937,7 +1003,7 @@ function updateExportEstimate() {
   showExportEstimate(`${count.toLocaleString()} selected photos + ${added.toLocaleString()} generated frames = ${frames.toLocaleString()} video frames · ${(frames / options.fps).toFixed(2)} seconds at ${options.fps} fps · ${dimensions}.${count === 1 && smooth ? " Select at least two photos to generate intermediate frames." : ""}`);
   return true;
 }
-for (const id of ["smooth-motion", "interpolation-method", "intermediate-frames", "video-export-fps", "video-export-resolution", "normalize-lighting", "timing-overlay", "cinematic-focus", "cinematic-zoom-percent"]) {
+for (const id of ["smooth-motion", "interpolation-method", "intermediate-frames", "video-export-fps", "video-export-resolution", "normalize-lighting", "timing-overlay", "cinematic-focus", "cinematic-zoom-percent", "cinematic-reset-threshold"]) {
   $(id).addEventListener("input", () => {
     if (currentId && updateExportEstimate()) {
       const options = videoExportOptions();

@@ -899,7 +899,7 @@ footer {
 .export-estimate { padding: 14px; background: var(--soft); border-radius: 6px; font-weight: 600; }
 .export-range { margin: 18px 0; padding: 16px; border: 1px solid var(--line); border-radius: 6px; min-width: 0; }
 .export-range legend { padding: 0 6px; font-weight: 600; }
-.export-range input[type="range"] { padding: 0; margin: 12px 0; accent-color: var(--green); }
+.export-range input[type="range"], #cinematic-reset-threshold { padding: 0; margin: 12px 0; accent-color: var(--green); }
 .export-range-track { height: 8px; background: #dde3d9; border-radius: 4px; margin: 4px 0 18px; overflow: hidden; }
 .export-range-track span { display: block; height: 100%; background: var(--green); }
 .timeline-card.outside-range img { opacity: .45; }

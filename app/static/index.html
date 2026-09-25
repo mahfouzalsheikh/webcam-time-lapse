@@ -175,6 +175,10 @@
             <label>Maximum zoom increase (%)
               <input id="cinematic-zoom-percent" type="number" min="0" max="100" step="1" value="20" required disabled aria-describedby="cinematic-focus-help" />
             </label>
+            <label for="cinematic-reset-threshold">Reset threshold: <output id="cinematic-reset-value" for="cinematic-reset-threshold">45%</output></label>
+            <input id="cinematic-reset-threshold" type="range" min="0" max="100" step="1" value="45" disabled aria-describedby="cinematic-reset-help cinematic-reset-count" />
+            <p id="cinematic-reset-help" class="help">Lower detects smaller angle changes; higher requires stronger changes. The count updates for the selected export range. Orientation changes always start a new shot.</p>
+            <p id="cinematic-reset-count" class="help" role="status" aria-live="polite">Enable cinematic motion to calculate zoom resets.</p>
             <p id="cinematic-focus-help" class="help">Adds a slow push-in with a gentle pan toward the changing area. 20% ends at 1.2× zoom; 0% keeps the view still. Major changes in camera angle automatically restart the zoom at full view, with no blending across the cut. Movement continues across added frames, including Repeat photos; use more added frames for a longer camera move. Keeps changing areas sharp, softens the background, and includes lighting normalization. The timing rings stay fixed. Applies to the exported MP4 only; a single photo remains still.</p>
             <label class="check">
               <input id="timing-overlay" type="checkbox" aria-describedby="timing-overlay-help" />

@@ -61,6 +61,12 @@ class FrameSelection(BaseModel):
     excluded: bool
 
 
+class CinematicAnalysisRequest(BaseModel):
+    cutoff: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    start_frame_id: FrameId | None = None
+    end_frame_id: FrameId | None = None
+
+
 class ExportRequest(BaseModel):
     cutoff: float | None = Field(default=None, ge=0, allow_inf_nan=False)
     start_frame_id: FrameId | None = None
@@ -69,6 +75,7 @@ class ExportRequest(BaseModel):
     timing_overlay: bool = False
     cinematic_focus: bool = False
     cinematic_zoom_percent: int = Field(default=20, ge=0, le=100, strict=True)
+    cinematic_reset_threshold: int = Field(default=45, ge=0, le=100, strict=True)
     interpolation: Literal["none", "repeat", "blend", "motion"] = "none"
     intermediate_frames: int = Field(default=5, ge=1, le=59)
     fps: int | None = Field(default=None, ge=1, le=60)

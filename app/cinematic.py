@@ -19,28 +19,54 @@ def scene_signature(path):
     return aspect, [(value - mean) / deviation for value in values]
 
 
-def scene_ranges(paths, check, progress=None):
-    """Find broad structural changes between adjacent captures, not local growth."""
+def scene_changes(paths, check, progress=None):
+    """Compare captures once; threshold changes can reuse these compact scores."""
     report = progress or (lambda *args: None)
-    starts, previous = [0], None
+    changes, previous = [], None
     report('scene_analysis', 0, len(paths))
     for index, path in enumerate(paths):
         check()
         aspect, current = scene_signature(path)
+        # Signed spatial gradients distinguish moved contours from broad light
+        # changes. Blank walls contribute very little to this comparison.
+        edges = [(current[y * 96 + x + 1] - current[y * 96 + x - 1],
+                  current[(y + 1) * 96 + x] - current[(y - 1) * 96 + x])
+                 for y in range(1, 71) for x in range(1, 95)]
         if previous is not None:
-            old_aspect, old = previous
+            old_aspect, old, old_edges = previous
             difference = [abs(a - b) for a, b in zip(old, current)]
-            # Require substantial change in most of the 8x6 spatial tiles. A
-            # growing leaf or a moving foreground object cannot reset the camera
-            # solely by producing a large difference in a small part of the shot.
-            changed = sum(
+            tiles = [
                 sum(difference[y * 96 + x] for y in range(top, top + 12)
-                    for x in range(left, left + 12)) / 144 > .75
-                for top in range(0, 72, 12) for left in range(0, 96, 12))
-            if abs(aspect / old_aspect - 1) > .05 or changed >= 27:
-                starts.append(index)
-        previous = aspect, current
+                    for x in range(left, left + 12)) / 144
+                for top in range(0, 72, 12) for left in range(0, 96, 12)]
+            edge_energy = sum(abs(a) + abs(b) + abs(c) + abs(d)
+                              for (a, b), (c, d) in zip(old_edges, edges))
+            edge_change = sum(abs(a - c) + abs(b - d)
+                              for (a, b), (c, d) in zip(old_edges, edges)) / max(edge_energy, 1e-6)
+            # A reframed subject against a plain wall may change fewer than half
+            # the tiles. Require strong contour change plus changes spread over
+            # at least ten tiles, instead of requiring the wall itself to move.
+            # The spatial/absolute floors reject tiny moving leaves and noise;
+            # the edge test rejects lighting changes that retain scene geometry.
+            reframed = sum(tiles) / len(tiles) >= .22 and sum(value > .30 for value in tiles) >= 10
+            broad_change = sum(value > .75 for value in tiles) >= 27
+            if abs(aspect / old_aspect - 1) > .05 or reframed or broad_change:
+                changes.append(dict(photo=index + 1, score_percent=edge_change * 100,
+                                    orientation_change=abs(aspect / old_aspect - 1) > .05))
+        previous = aspect, current, edges
         report('scene_analysis', index + 1, len(paths))
+    return changes
+
+
+def reset_photos(changes, threshold_percent=45):
+    return [change['photo'] for change in changes
+            if change['orientation_change'] or change['score_percent'] >= threshold_percent]
+
+
+def scene_ranges(paths, check, progress=None, threshold_percent=45):
+    """Find structural cuts, with the same threshold rules used by the preview."""
+    changes = scene_changes(paths, check, progress)
+    starts = [0] + [photo - 1 for photo in reset_photos(changes, threshold_percent)]
     return list(zip(starts, starts[1:] + [len(paths)])) if paths else []
 
 

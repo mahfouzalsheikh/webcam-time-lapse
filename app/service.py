@@ -53,6 +53,8 @@ class Recorder:
         self.tick_lock = asyncio.Lock()
         self.state_lock = asyncio.Lock()
         self.preview_lock = asyncio.Lock()
+        self.cinematic_analysis_lock = asyncio.Lock()
+        self.cinematic_analysis_cache = None
         self.export_task = None
         self.scheduler_task = None
         self.owner = None
@@ -108,6 +110,8 @@ class Recorder:
         async with self.camera_lock:
             pass
         async with self.preview_lock:
+            pass
+        async with self.cinematic_analysis_lock:
             pass
         if self.export_task:
             await self.export_task
@@ -362,11 +366,44 @@ class Recorder:
                 await task
                 raise
 
-    async def create_export(self, cutoff=None, normalize_lighting=False, *, interpolation="none", intermediate_frames=5, fps=None, start_frame_id=None, end_frame_id=None, resolution="project", timing_overlay=False, cinematic_focus=False, cinematic_zoom_percent=20):
+    async def analyze_cinematic_resets(self, cutoff=None, start_frame_id=None, end_frame_id=None):
+        self.ensure_available()
+        cutoff = min(time.time(), cutoff) if cutoff is not None else time.time()
+        with self.store.connect() as db:
+            predicate, params, _ = self.frame_range(db, cutoff, start_frame_id, end_frame_id)
+            ids = tuple(row[0] for row in db.execute(
+                f"SELECT id FROM frames WHERE {predicate} AND excluded=0 ORDER BY captured_at,id", params))
+
+        def compare():
+            def check():
+                if self.stopping.is_set() or self.deleting:
+                    raise RuntimeError("Photo analysis stopped; refresh after the app restarts.")
+            try:
+                return cinematic.scene_changes([self.root / 'frames' / f'{frame_id}.jpg' for frame_id in ids], check)
+            except OSError as exc:
+                raise ValueError("Photos changed during analysis. Refresh the timeline and try again.") from exc
+
+        # Bound the cache to one selected sequence per project. Photo IDs are
+        # immutable; additions, exclusions, deletions and range changes alter the
+        # key. Slider changes need neither image reads nor an export job.
+        async with self.cinematic_analysis_lock:
+            if self.cinematic_analysis_cache is None or self.cinematic_analysis_cache[0] != ids:
+                task = asyncio.create_task(asyncio.to_thread(compare))
+                try:
+                    changes = await asyncio.shield(task)
+                except asyncio.CancelledError:
+                    # Keep the lock until the worker exits, avoiding overlapping
+                    # decoders when a browser cancels an outdated request.
+                    await task
+                    raise
+                self.cinematic_analysis_cache = ids, changes
+            return dict(frames=len(ids), changes=self.cinematic_analysis_cache[1])
+
+    async def create_export(self, cutoff=None, normalize_lighting=False, *, interpolation="none", intermediate_frames=5, fps=None, start_frame_id=None, end_frame_id=None, resolution="project", timing_overlay=False, cinematic_focus=False, cinematic_zoom_percent=20, cinematic_reset_threshold=45):
         options = ExportRequest(cutoff=cutoff, normalize_lighting=normalize_lighting,
                                 interpolation=interpolation, intermediate_frames=intermediate_frames, fps=fps,
                                 start_frame_id=start_frame_id, end_frame_id=end_frame_id, resolution=resolution,
-                                timing_overlay=timing_overlay, cinematic_focus=cinematic_focus, cinematic_zoom_percent=cinematic_zoom_percent)
+                                timing_overlay=timing_overlay, cinematic_focus=cinematic_focus, cinematic_zoom_percent=cinematic_zoom_percent, cinematic_reset_threshold=cinematic_reset_threshold)
         normalize_lighting = options.normalize_lighting or options.cinematic_focus
         self.ensure_available()
         # No await between checking and registering the task: requests cannot overlap here.
@@ -388,8 +425,8 @@ class Recorder:
             job = {"id": uuid.uuid4().hex, "created_at": time.time(), "status": "queued", "frames": count, "fps": settings.export_fps, "error": None, "normalize_lighting": normalize_lighting,
                    "interpolation": options.interpolation, "intermediate_frames": options.intermediate_frames if options.interpolation != "none" else 0,
                    "start_frame_id": options.start_frame_id, "end_frame_id": options.end_frame_id, "timing_overlay": options.timing_overlay,
-                   "cinematic_focus": options.cinematic_focus, "cinematic_zoom_percent": options.cinematic_zoom_percent}
-            db.execute("INSERT INTO exports(id,created_at,status,frames,fps,error,settings,snapshot,normalize_lighting,interpolation,intermediate_frames,start_frame_id,end_frame_id,timing_overlay,cinematic_focus,cinematic_zoom_percent) VALUES (:id,:created_at,:status,:frames,:fps,:error,:settings,1,:normalize_lighting,:interpolation,:intermediate_frames,:start_frame_id,:end_frame_id,:timing_overlay,:cinematic_focus,:cinematic_zoom_percent)", {**job, "settings": settings.model_dump_json()})
+                   "cinematic_focus": options.cinematic_focus, "cinematic_zoom_percent": options.cinematic_zoom_percent, "cinematic_reset_threshold": options.cinematic_reset_threshold}
+            db.execute("INSERT INTO exports(id,created_at,status,frames,fps,error,settings,snapshot,normalize_lighting,interpolation,intermediate_frames,start_frame_id,end_frame_id,timing_overlay,cinematic_focus,cinematic_zoom_percent,cinematic_reset_threshold) VALUES (:id,:created_at,:status,:frames,:fps,:error,:settings,1,:normalize_lighting,:interpolation,:intermediate_frames,:start_frame_id,:end_frame_id,:timing_overlay,:cinematic_focus,:cinematic_zoom_percent,:cinematic_reset_threshold)", {**job, "settings": settings.model_dump_json()})
             db.execute(f"INSERT INTO export_frames SELECT ?,id FROM frames WHERE {predicate} AND excluded=0", (job["id"], *params))
         self.export_task = asyncio.create_task(self.run_exports())
         return export_details({**job, "settings": settings.model_dump_json()})
@@ -439,7 +476,7 @@ class Recorder:
             query = "SELECT f.id,f.captured_at FROM export_frames e JOIN frames f ON f.id=e.frame_id WHERE e.export_id=? ORDER BY f.captured_at,f.id" if job.get("snapshot") else "SELECT id,captured_at FROM frames WHERE captured_at<=? ORDER BY captured_at,id"
             rows = self.store.rows(query, (job["id"] if job.get("snapshot") else job["created_at"],))
             paths = [self.root / "frames" / f"{row['id']}.jpg" for row in rows]
-            scenes = cinematic.scene_ranges(paths, check_export, progress.report) if job.get("cinematic_focus") else None
+            scenes = cinematic.scene_ranges(paths, check_export, progress.report, job.get("cinematic_reset_threshold", 45)) if job.get("cinematic_focus") else None
             shots = None
             if job.get("normalize_lighting"):
                 corrected.mkdir()

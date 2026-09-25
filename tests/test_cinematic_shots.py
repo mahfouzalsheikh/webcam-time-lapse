@@ -146,7 +146,8 @@ def test_lighting_uses_separate_references_for_each_shot(tmp_path):
 
 @pytest.mark.skipif(not shutil.which('ffmpeg'), reason='FFmpeg required')
 @pytest.mark.parametrize('mode', ['repeat', 'blend', 'motion'])
-def test_real_export_detects_cuts_resets_zoom_and_retains_saved_amount_after_restart(tmp_path, mode):
+@pytest.mark.parametrize('threshold', [55, 100])
+def test_real_export_detects_cuts_resets_zoom_and_retains_saved_amount_after_restart(tmp_path, mode, threshold):
     async def scenario():
         rec = Recorder(tmp_path, True)
         await rec.save_settings(Settings(width=320, height=240, export_fps=30))
@@ -163,7 +164,7 @@ def test_real_export_detects_cuts_resets_zoom_and_retains_saved_amount_after_res
         async def queued(self):
             pass
         with patch.object(Recorder, 'run_exports', queued):
-            job = await rec.create_export(cinematic_focus=True, cinematic_zoom_percent=35,
+            job = await rec.create_export(cinematic_focus=True, cinematic_zoom_percent=35, cinematic_reset_threshold=threshold,
                                           interpolation=mode, intermediate_frames=2, timing_overlay=True)
             await rec.export_task
         resumed = Recorder(tmp_path, True)
@@ -175,6 +176,7 @@ def test_real_export_detects_cuts_resets_zoom_and_retains_saved_amount_after_res
         saved = rec.store.rows('SELECT * FROM exports')[0]
         assert saved['status'] == 'complete', saved['error']
         assert saved['cinematic_zoom_percent'] == 35
+        assert saved['cinematic_reset_threshold'] == threshold
         video = tmp_path / 'exports' / f"{job['id']}.mp4"
         raw = subprocess.check_output(['ffmpeg', '-v', 'error', '-i', str(video),
                                        '-f', 'rawvideo', '-pix_fmt', 'gray', '-'])
@@ -185,8 +187,12 @@ def test_real_export_detects_cuts_resets_zoom_and_retains_saved_amount_after_res
             frame = Image.frombytes('L', (320, 240), raw[n * stride:(n + 1) * stride])
             box = frame.crop((60, 70, 260, 200)).point(lambda p: 255 if p > 215 else 0).getbbox()
             widths.append(box[2] - box[0])
-        assert widths[0] == widths[2] == 41
-        assert widths[1] / 41 == pytest.approx(1.35, abs=.04)
+        assert widths[0] == 41
+        if threshold == 55:
+            assert widths[2] == 41
+            assert widths[1] / 41 == pytest.approx(1.35, abs=.04)
+        else:
+            assert widths[2] > 45  # High threshold suppresses the cut; zoom continues.
         assert widths[3] / 41 == pytest.approx(1.35, abs=.04)
         assert all(path.read_bytes() == before for path, before in originals)
         assert list((tmp_path / 'exports').iterdir()) == [video]
@@ -218,3 +224,46 @@ def test_orientation_cut_keeps_all_frames_and_each_shot_inside_its_own_bounds(tm
             assert image.getpixel((160, 120)) == pytest.approx((80, 100, 120), abs=4)
             assert image.getpixel((10, 120)) == pytest.approx((80, 100, 120) if n < 6 else (0, 0, 0), abs=4)
     asyncio.run(scenario())
+
+
+def sparse_scene(view, growth=0):
+    """A container against a plain wall, seen from three camera positions."""
+    image = Image.new('RGB', (320, 240), (220, 216, 206))
+    draw = ImageDraw.Draw(image)
+    left, top, right, bottom = [(45, 35, 275, 225), (90, 90, 230, 222), (105, 115, 217, 227)][view]
+    draw.rectangle((left, top, right, bottom), fill=(90, 80, 60), outline=(180, 180, 170), width=4)
+    for i in range(9):
+        x = left + 8 + i * (right - left - 16) // 8
+        draw.line((x, bottom - 15, x + 6, top + 18 - growth), fill=(75, 115, 35), width=2)
+    draw.line((left, top + 40, right, top + 40), fill=(230, 230, 210), width=3)
+    return image
+
+
+def test_detects_both_reframings_against_plain_wall(tmp_path):
+    paths = []
+    for i, (view, growth) in enumerate([(0, 0), (0, 2), (1, 0), (1, 2), (2, 0), (2, 2)]):
+        path = tmp_path / f'{i}.png'
+        sparse_scene(view, growth).save(path)
+        paths.append(path)
+    # Neither cut meets the former "most of the image changed" requirement.
+    assert cinematic.scene_ranges(paths, lambda: None) == [(0, 2), (2, 4), (4, 6)]
+    # Detection also works when exporting a short range around the second cut.
+    assert cinematic.scene_ranges(paths[3:5], lambda: None) == [(0, 1), (1, 2)]
+
+
+def test_plain_wall_exposure_shadow_and_local_growth_do_not_reset_camera(tmp_path):
+    original = sparse_scene(1)
+    brighter = original.point(lambda value: round(value * .85 + 30))
+    shadow = original.copy()
+    pixels = shadow.load()
+    for y in range(shadow.height):
+        for x in range(shadow.width):
+            pixels[x, y] = tuple(round(value * (.65 + .35 * x / shadow.width)) for value in pixels[x, y])
+    local_change = sparse_scene(1, growth=8)
+    ImageDraw.Draw(local_change).ellipse((140, 60, 150, 90), fill=(40, 110, 20))
+    paths = []
+    for i, image in enumerate((original, brighter, original, shadow, original, local_change)):
+        path = tmp_path / f'{i}.png'
+        image.save(path)
+        paths.append(path)
+    assert cinematic.scene_ranges(paths, lambda: None) == [(0, 6)]
