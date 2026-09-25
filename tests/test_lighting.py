@@ -83,7 +83,7 @@ def test_normalization_failure_cleans_temporary_files(tmp_path, failure, status)
     async def scenario():
         rec = Recorder(tmp_path, True)
         add_frame(rec, 1, (100, 120, 110))
-        def fail(paths, directory, check, progress=None):
+        def fail(paths, directory, check, progress=None, scenes=None):
             (directory / 'partial.png').write_bytes(b'partial')
             if progress:
                 progress('normalizing', 0, len(paths))

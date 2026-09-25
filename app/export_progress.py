@@ -46,6 +46,7 @@ def progress_details(job, now=None):
     if job.get('timing_overlay'):
         stages.insert(stages.index('encoding'), 'overlay')
     if job.get('cinematic_focus'):
+        stages.insert(0, 'scene_analysis')
         position = stages.index('overlay') if 'overlay' in stages else stages.index('encoding')
         stages[position:position] = ['focus_analysis', 'focusing']
     return {

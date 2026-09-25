@@ -159,7 +159,7 @@ def create_app(data_dir=None, demo=None):
 
     @router.get("/exports")
     async def exports(recorder: Recorder = Depends(get_recorder)):
-        return [export_details(job) for job in recorder.store.rows("SELECT id,created_at,status,frames,fps,error,settings,normalize_lighting,timing_overlay,cinematic_focus,interpolation,intermediate_frames,start_frame_id,end_frame_id,progress FROM exports ORDER BY created_at DESC LIMIT 20")]
+        return [export_details(job) for job in recorder.store.rows("SELECT id,created_at,status,frames,fps,error,settings,normalize_lighting,timing_overlay,cinematic_focus,cinematic_zoom_percent,interpolation,intermediate_frames,start_frame_id,end_frame_id,progress FROM exports ORDER BY created_at DESC LIMIT 20")]
 
     @router.post("/exports", status_code=202)
     async def export(request: ExportRequest = ExportRequest(), recorder: Recorder = Depends(get_recorder)):

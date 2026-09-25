@@ -74,7 +74,7 @@ def correct_frame(path, gains, directory):
                 corrected.save(directory / f"{path.stem}.png", "PNG", compress_level=1)
 
 
-def prepare_frames(paths, directory, check, progress=None):
+def prepare_frames(paths, directory, check, progress=None, scenes=None):
     """Write corrected frames with at most four images being processed at once."""
     samples = []
     report = progress or (lambda stage, completed, total: None)
@@ -83,7 +83,11 @@ def prepare_frames(paths, directory, check, progress=None):
         check()
         samples.append(scene_samples(path))
         report('analyzing', index, len(paths))
-    gains = lighting_gains(samples, check)
+    # A new camera angle gets its own exposure reference, rather than matching
+    # unrelated parts of the previous shot.
+    gains = []
+    for start, end in scenes if scenes is not None else [(0, len(paths))]:
+        gains.extend(lighting_gains(samples[start:end], check))
     del samples
     report('normalizing', 0, len(paths))
     workers = min(4, max(1, os.cpu_count() or 1), max(1, len(paths)))

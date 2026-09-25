@@ -1,6 +1,47 @@
 """Keep changing detail sharp while quietly softening the static background."""
 
-from PIL import Image, ImageChops, ImageFilter
+from math import sqrt
+
+from PIL import Image, ImageChops, ImageFilter, ImageOps
+
+
+def scene_signature(path):
+    """Small spatial signature, invariant to uniform exposure/contrast changes."""
+    with Image.open(path) as source:
+        source.draft('RGB', (192, 144))
+        with ImageOps.exif_transpose(source) as oriented:
+            aspect = oriented.width / oriented.height
+            small = oriented.convert('L').resize((96, 72), Image.Resampling.BOX)
+    values = list(small.filter(ImageFilter.GaussianBlur(1)).get_flattened_data())
+    mean = sum(values) / len(values)
+    # Do not amplify noise in plain walls or nearly black frames.
+    deviation = max(12., sqrt(sum((value - mean) ** 2 for value in values) / len(values)))
+    return aspect, [(value - mean) / deviation for value in values]
+
+
+def scene_ranges(paths, check, progress=None):
+    """Find broad structural changes between adjacent captures, not local growth."""
+    report = progress or (lambda *args: None)
+    starts, previous = [0], None
+    report('scene_analysis', 0, len(paths))
+    for index, path in enumerate(paths):
+        check()
+        aspect, current = scene_signature(path)
+        if previous is not None:
+            old_aspect, old = previous
+            difference = [abs(a - b) for a, b in zip(old, current)]
+            # Require substantial change in most of the 8x6 spatial tiles. A
+            # growing leaf or a moving foreground object cannot reset the camera
+            # solely by producing a large difference in a small part of the shot.
+            changed = sum(
+                sum(difference[y * 96 + x] for y in range(top, top + 12)
+                    for x in range(left, left + 12)) / 144 > .75
+                for top in range(0, 72, 12) for left in range(0, 96, 12))
+            if abs(aspect / old_aspect - 1) > .05 or changed >= 27:
+                starts.append(index)
+        previous = aspect, current
+        report('scene_analysis', index + 1, len(paths))
+    return list(zip(starts, starts[1:] + [len(paths)])) if paths else []
 
 
 def detail_map(path):
@@ -39,13 +80,30 @@ def focus_mask(paths, check, report):
     return changed.filter(ImageFilter.MaxFilter(21)).filter(ImageFilter.GaussianBlur(3))
 
 
-def prepare_frames(paths, check, progress=None):
+def prepare_frames(paths, check, progress=None, scenes=None):
     """Process only temporary, already normalized PNGs; originals stay intact."""
     report = progress or (lambda stage, completed, total: None)
-    mask = focus_mask(paths, check, report)
+    scenes = scenes if scenes is not None else [(0, len(paths))]
+    masks = []
+    for start, end in scenes:
+        mask = focus_mask(paths[start:end], check,
+                          lambda stage, completed, total: report(stage, start + completed, len(paths)))
+        masks.append(mask)
+    shots = []
+    for (start, end), mask in zip(scenes, masks):
+        bounds = mask.point(lambda value: 255 if value >= 128 else 0).getbbox() if mask else None
+        target = (.5, .5)
+        if bounds:
+            left, top, right, bottom = bounds
+            target = (left + right) / (2 * mask.width), (top + bottom) / (2 * mask.height)
+        shots.append(dict(start=start, end=end, target=target))
     report('focusing', 0, len(paths))
+    shot_index = 0
     for index, path in enumerate(paths, 1):
         check()
+        while index > scenes[shot_index][1]:
+            shot_index += 1
+        mask = masks[shot_index]
         if mask is not None:
             temporary = path.with_suffix('.focus.png')
             try:
@@ -61,10 +119,5 @@ def prepare_frames(paths, check, progress=None):
             finally:
                 temporary.unlink(missing_ok=True)
         report('focusing', index, len(paths))
-    # A single target for the whole camera move avoids chasing individual leaves
-    # or jumping between captures. Still scenes get a visible centered push-in.
-    bounds = mask.point(lambda value: 255 if value >= 128 else 0).getbbox() if mask else None
-    if bounds:
-        left, top, right, bottom = bounds
-        return (left + right) / (2 * mask.width), (top + bottom) / (2 * mask.height)
-    return .5, .5
+    # Keep one fixed focus and camera target per shot; never chase growing leaves.
+    return shots

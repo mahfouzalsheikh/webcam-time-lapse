@@ -362,11 +362,11 @@ class Recorder:
                 await task
                 raise
 
-    async def create_export(self, cutoff=None, normalize_lighting=False, *, interpolation="none", intermediate_frames=5, fps=None, start_frame_id=None, end_frame_id=None, resolution="project", timing_overlay=False, cinematic_focus=False):
+    async def create_export(self, cutoff=None, normalize_lighting=False, *, interpolation="none", intermediate_frames=5, fps=None, start_frame_id=None, end_frame_id=None, resolution="project", timing_overlay=False, cinematic_focus=False, cinematic_zoom_percent=20):
         options = ExportRequest(cutoff=cutoff, normalize_lighting=normalize_lighting,
                                 interpolation=interpolation, intermediate_frames=intermediate_frames, fps=fps,
                                 start_frame_id=start_frame_id, end_frame_id=end_frame_id, resolution=resolution,
-                                timing_overlay=timing_overlay, cinematic_focus=cinematic_focus)
+                                timing_overlay=timing_overlay, cinematic_focus=cinematic_focus, cinematic_zoom_percent=cinematic_zoom_percent)
         normalize_lighting = options.normalize_lighting or options.cinematic_focus
         self.ensure_available()
         # No await between checking and registering the task: requests cannot overlap here.
@@ -388,8 +388,8 @@ class Recorder:
             job = {"id": uuid.uuid4().hex, "created_at": time.time(), "status": "queued", "frames": count, "fps": settings.export_fps, "error": None, "normalize_lighting": normalize_lighting,
                    "interpolation": options.interpolation, "intermediate_frames": options.intermediate_frames if options.interpolation != "none" else 0,
                    "start_frame_id": options.start_frame_id, "end_frame_id": options.end_frame_id, "timing_overlay": options.timing_overlay,
-                   "cinematic_focus": options.cinematic_focus}
-            db.execute("INSERT INTO exports(id,created_at,status,frames,fps,error,settings,snapshot,normalize_lighting,interpolation,intermediate_frames,start_frame_id,end_frame_id,timing_overlay,cinematic_focus) VALUES (:id,:created_at,:status,:frames,:fps,:error,:settings,1,:normalize_lighting,:interpolation,:intermediate_frames,:start_frame_id,:end_frame_id,:timing_overlay,:cinematic_focus)", {**job, "settings": settings.model_dump_json()})
+                   "cinematic_focus": options.cinematic_focus, "cinematic_zoom_percent": options.cinematic_zoom_percent}
+            db.execute("INSERT INTO exports(id,created_at,status,frames,fps,error,settings,snapshot,normalize_lighting,interpolation,intermediate_frames,start_frame_id,end_frame_id,timing_overlay,cinematic_focus,cinematic_zoom_percent) VALUES (:id,:created_at,:status,:frames,:fps,:error,:settings,1,:normalize_lighting,:interpolation,:intermediate_frames,:start_frame_id,:end_frame_id,:timing_overlay,:cinematic_focus,:cinematic_zoom_percent)", {**job, "settings": settings.model_dump_json()})
             db.execute(f"INSERT INTO export_frames SELECT ?,id FROM frames WHERE {predicate} AND excluded=0", (job["id"], *params))
         self.export_task = asyncio.create_task(self.run_exports())
         return export_details({**job, "settings": settings.model_dump_json()})
@@ -424,6 +424,7 @@ class Recorder:
         final = directory / f"{job['id']}.mp4"
         corrected = directory / f".{job['id']}.lighting"
         overlay = directory / f".{job['id']}.timing.ass"
+        filter_script = directory / f".{job['id']}.filters.txt"
         deadline = time.monotonic() + 21600
         progress = ExportProgress(self.store, job['id'])
 
@@ -437,13 +438,14 @@ class Recorder:
         try:
             query = "SELECT f.id,f.captured_at FROM export_frames e JOIN frames f ON f.id=e.frame_id WHERE e.export_id=? ORDER BY f.captured_at,f.id" if job.get("snapshot") else "SELECT id,captured_at FROM frames WHERE captured_at<=? ORDER BY captured_at,id"
             rows = self.store.rows(query, (job["id"] if job.get("snapshot") else job["created_at"],))
-            cinematic_target = (.5, .5)
+            paths = [self.root / "frames" / f"{row['id']}.jpg" for row in rows]
+            scenes = cinematic.scene_ranges(paths, check_export, progress.report) if job.get("cinematic_focus") else None
+            shots = None
             if job.get("normalize_lighting"):
                 corrected.mkdir()
-                lighting.prepare_frames([self.root / "frames" / f"{row['id']}.jpg" for row in rows],
-                                        corrected, check_export, progress.report)
+                lighting.prepare_frames(paths, corrected, check_export, progress.report, scenes)
                 if job.get("cinematic_focus"):
-                    cinematic_target = cinematic.prepare_frames([corrected / f"{row['id']}.png" for row in rows], check_export, progress.report)
+                    shots = cinematic.prepare_frames([corrected / f"{row['id']}.png" for row in rows], check_export, progress.report, scenes)
             with manifest.open("w") as handle:
                 for row in rows:
                     # Relative paths contain only internally generated hex IDs.
@@ -453,17 +455,24 @@ class Recorder:
             bounds = None
             if job.get("timing_overlay") or job.get("cinematic_focus"):
                 bounds = timing_overlay.photo_bounds([self.root / "frames" / f"{row['id']}.jpg" for row in rows], settings, check_export)
-            filters = export_filters(job, settings, cinematic_target, bounds)
+            if shots and len(shots) > 1:
+                for shot in shots:
+                    shot['bounds'] = timing_overlay.photo_bounds(paths[shot['start']:shot['end']], settings, check_export)
+            filters = export_filters(job, settings, content_bounds=bounds, shots=shots)
             if job.get("timing_overlay"):
                 timing_overlay.write_overlay(overlay, [row['captured_at'] for row in rows], job, settings, check_export, progress.report, bounds)
                 # Escape both filter-option and filtergraph parsing layers.
                 filename = str(overlay.resolve()).replace('\\', '\\\\').replace(':', '\\:').replace("'", "\\'")
                 filename = filename.replace('\\', '\\\\').replace("'", "\\'").replace(',', '\\,').replace(';', '\\;').replace('[', '\\[').replace(']', '\\]')
                 filters += f",subtitles=filename={filename}"
+            # Shot-specific graphs can exceed the OS command-argument limit.
+            filter_script.write_text(filters)
             command = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
                        "-nostats", "-stats_period", "1", "-progress", str(progress_file),
-                       "-r", f"{job['fps']}/{factor}", "-f", "concat", "-safe", "0", "-i", str(manifest),
-                       "-vf", filters, "-r", str(job["fps"]),
+                       # Scale/pad handle changing source sizes per frame. Keep
+                       # filter counters intact across portrait/landscape cuts.
+                       "-reinit_filter", "0", "-r", f"{job['fps']}/{factor}", "-f", "concat", "-safe", "0", "-i", str(manifest),
+                       "-filter_script:v", str(filter_script), "-r", str(job["fps"]),
                        "-c:v", "libx264", "-threads", "2", "-preset", "fast", "-crf", "20", "-pix_fmt", "yuv420p",
                        "-movflags", "+faststart", str(temp)]
             # Keep FFmpeg errors out of RAM and check the disk reserve during long exports.
@@ -502,5 +511,6 @@ class Recorder:
             log.unlink(missing_ok=True)
             progress_file.unlink(missing_ok=True)
             overlay.unlink(missing_ok=True)
+            filter_script.unlink(missing_ok=True)
             if corrected.exists():
                 shutil.rmtree(corrected)

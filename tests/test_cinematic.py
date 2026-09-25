@@ -204,7 +204,7 @@ def test_still_scene_gets_centered_camera_target_and_single_frame_stays_still(tm
 
     path = tmp_path / 'still.png'
     Image.new('RGB', (320, 240), (100, 120, 140)).save(path)
-    assert cinematic.prepare_frames([path], lambda: None) == (.5, .5)
+    assert cinematic.prepare_frames([path], lambda: None) == [dict(start=0, end=1, target=(.5, .5))]
     job = dict(frames=1, fps=24, interpolation='repeat', intermediate_frames=5, cinematic_focus=True)
     assert export_filters(job, Settings(width=320, height=240)) == export_filters(
         {**job, 'cinematic_focus': False}, Settings(width=320, height=240))

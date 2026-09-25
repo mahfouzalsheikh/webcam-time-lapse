@@ -21,9 +21,10 @@ def export_details(job):
             "progress": progress_details(job)}
 
 
-def camera_filters(job, settings, target, bounds):
-    frames = output_frame_count(job['frames'], job.get('interpolation', 'none'), job.get('intermediate_frames', 0))
-    if frames < 2:
+def camera_filters(job, settings, target, bounds, frames=None):
+    frames = frames if frames is not None else output_frame_count(job['frames'], job.get('interpolation', 'none'), job.get('intermediate_frames', 0))
+    zoom = 1 + job.get('cinematic_zoom_percent', 20) / 100
+    if frames < 2 or zoom == 1:
         return ""
     left, top, width, height = bounds or (0, 0, settings.width, settings.height)
     # Crop only inside the fitted photo, leaving letterbox bars stationary.
@@ -38,10 +39,10 @@ def camera_filters(job, settings, target, bounds):
     tx, ty = (max(0., min(1., value)) for value in target)
     # Clamp the destination view once, then ease all four source corners toward
     # it. This keeps the path inside the photo without hitting a pan limit partway
-    # through the move. The final view is 1/1.2 of the original in both dimensions.
-    inset = 1 - 1 / 1.2
-    end_x = max(0., min(inset, tx - 1 / 2.4))
-    end_y = max(0., min(inset, ty - 1 / 2.4))
+    # through the move. The final view matches the configured maximum zoom.
+    inset = 1 - 1 / zoom
+    end_x = max(0., min(inset, tx - 1 / (2 * zoom)))
+    end_y = max(0., min(inset, ty - 1 / (2 * zoom)))
     left_edge = f"W*{end_x:.12f}*{ease}"
     right_edge = f"W*(1-{inset - end_x:.12f}*{ease})"
     top_edge = f"H*{end_y:.12f}*{ease}"
@@ -57,9 +58,8 @@ def camera_filters(job, settings, target, bounds):
             f"pad={settings.width}:{settings.height}:{x}:{y},setsar=1")
 
 
-def export_filters(job, settings, cinematic_target=(.5, .5), content_bounds=None):
-    filters = (f"scale={settings.width}:{settings.height}:force_original_aspect_ratio=decrease:flags=lanczos,"
-               f"pad={settings.width}:{settings.height}:(ow-iw)/2:(oh-ih)/2,setsar=1")
+def interpolation_filters(job):
+    filters = ''
     if job.get("interpolation", "none") != "none" and job["frames"] > 1:
         frames = export_details(job)["output_frames"]
         if job["interpolation"] == "repeat":
@@ -78,6 +78,37 @@ def export_filters(job, settings, cinematic_target=(.5, .5), content_bounds=None
             filters += (",format=yuv420p,tpad=start_mode=clone:start=1:stop_mode=clone:stop=2,"
                         f"minterpolate=fps={job['fps']}:mi_mode={mode}{options},"
                         f"trim=start_frame={factor}:end_frame={frames + factor},setpts=PTS-STARTPTS")
-    if job.get('cinematic_focus'):
-        filters += camera_filters(job, settings, cinematic_target, content_bounds)
     return filters
+
+
+def export_filters(job, settings, cinematic_target=(.5, .5), content_bounds=None, shots=None):
+    filters = (f"scale={settings.width}:{settings.height}:force_original_aspect_ratio=decrease:flags=lanczos:eval=frame,"
+               f"pad={settings.width}:{settings.height}:(ow-iw)/2:(oh-ih)/2:eval=frame,setsar=1")
+    if not job.get('cinematic_focus') or not shots or len(shots) == 1:
+        filters += interpolation_filters(job)
+        if job.get('cinematic_focus'):
+            target = shots[0]['target'] if shots else cinematic_target
+            filters += camera_filters(job, settings, target, content_bounds)
+        return filters
+
+    # Interpolate within each shot, never across a detected cut. Keep the same
+    # frame count/timeline by holding the outgoing photo for the inter-shot gap.
+    # Each branch has its own frame counter, so the incoming shot starts at 1x.
+    factor = job.get('intermediate_frames', 0) + 1 if job.get('interpolation', 'none') != 'none' else 1
+    filters += f",split={len(shots)}" + ''.join(f"[shot{i}]" for i in range(len(shots)))
+    for i, shot in enumerate(shots):
+        count = shot['end'] - shot['start']
+        local = {**job, 'frames': count}
+        frames = output_frame_count(count, job.get('interpolation', 'none'), job.get('intermediate_frames', 0))
+        hold = factor - 1 if i < len(shots) - 1 else 0
+        filters += f";[shot{i}]trim=start_frame={shot['start']}:end_frame={shot['end']},setpts=PTS-STARTPTS"
+        filters += interpolation_filters(local)
+        if hold:
+            filters += f",tpad=stop_mode=clone:stop={hold}"
+        # fps establishes the correct final-frame duration for concat, including
+        # one-photo shots. Reset PTS before it so no source frames get duplicated.
+        filters += f",settb=AVTB,setpts=N/({job['fps']}*TB),fps={job['fps']}:round=near"
+        filters += camera_filters(local, settings, shot['target'], shot.get('bounds', content_bounds), frames + hold)
+        filters += f"[move{i}]"
+    filters += ';' + ''.join(f"[move{i}]" for i in range(len(shots)))
+    return filters + f"concat=n={len(shots)}:v=1:a=0,setsar=1"
