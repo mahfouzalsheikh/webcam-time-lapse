@@ -168,6 +168,23 @@
           </div>
           <div class="card export-options">
             <h3>Export options</h3>
+            <div class="color-adjustments">
+              <h4>Lighting and contrast</h4>
+              <label for="export-brightness">Brightness: <output id="brightness-value" for="export-brightness">0%</output></label>
+              <input id="export-brightness" type="range" min="-100" max="100" step="1" value="0" />
+              <label for="export-contrast">Contrast: <output id="contrast-value" for="export-contrast">100%</output></label>
+              <input id="export-contrast" type="range" min="0" max="200" step="1" value="100" />
+              <div class="actions">
+                <button id="color-use-frame" type="button" disabled>Use selected frame</button>
+                <button id="color-reset" type="button">Reset adjustments</button>
+              </div>
+              <p class="help">Applied to every photo in the export; originals stay unchanged. Select a photo in the timeline and use it to compare these adjustments below. Automatic normalization and cinematic effects are applied separately during export.</p>
+              <p id="color-preview-status" class="help" role="status" aria-live="polite">Select a frame to preview adjustments.</p>
+              <div id="color-preview-pair" class="color-preview-pair" hidden>
+                <figure><img id="color-original" alt="Selected photo before manual adjustments" /><figcaption>Original</figcaption></figure>
+                <figure><img id="color-adjusted" alt="Selected photo with brightness and contrast adjustments" /><figcaption>Adjusted</figcaption></figure>
+              </div>
+            </div>
             <label class="check">
               <input id="cinematic-focus" type="checkbox" aria-describedby="cinematic-focus-help" />
               Cinematic motion — centered zoom

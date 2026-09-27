@@ -997,3 +997,13 @@ footer {
 }
 .capture .ring-value { font-size: 19px; }
 .capture .ring-value.long-countdown { font-size: 15px; }
+
+.color-adjustments { margin-bottom: 24px; }
+.color-adjustments label { display: block; margin: 12px 0 4px; }
+.color-adjustments input[type="range"] { padding: 0; accent-color: var(--green); }
+.color-preview-pair { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-top: 12px; }
+.color-preview-pair[hidden] { display: none; }
+.color-preview-pair figure { margin: 0; }
+.color-preview-pair img { display: block; width: 100%; height: 280px; object-fit: contain; background: #171b16; }
+.color-preview-pair figcaption { text-align: center; margin-top: 6px; }
+@media (max-width: 600px) { .color-preview-pair { grid-template-columns: 1fr; } }

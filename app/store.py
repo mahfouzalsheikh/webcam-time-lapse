@@ -43,6 +43,9 @@ class Store:
                 db.execute("ALTER TABLE exports ADD COLUMN cinematic_zoom_percent INTEGER NOT NULL DEFAULT 20")
             if "cinematic_reset_threshold" not in {row[1] for row in db.execute("PRAGMA table_info(exports)")}:
                 db.execute("ALTER TABLE exports ADD COLUMN cinematic_reset_threshold INTEGER NOT NULL DEFAULT 45")
+            for column, default in (("brightness", 0), ("contrast", 100)):
+                if column not in {row[1] for row in db.execute("PRAGMA table_info(exports)")}:
+                    db.execute(f"ALTER TABLE exports ADD COLUMN {column} INTEGER NOT NULL DEFAULT {default}")
             if "interpolation" not in {row[1] for row in db.execute("PRAGMA table_info(exports)")}:
                 db.execute("ALTER TABLE exports ADD COLUMN interpolation TEXT NOT NULL DEFAULT 'none'")
             if "intermediate_frames" not in {row[1] for row in db.execute("PRAGMA table_info(exports)")}:

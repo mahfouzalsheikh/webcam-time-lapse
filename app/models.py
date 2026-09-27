@@ -67,7 +67,16 @@ class CinematicAnalysisRequest(BaseModel):
     end_frame_id: FrameId | None = None
 
 
-class ExportRequest(BaseModel):
+class ColorAdjustments(BaseModel):
+    brightness: int = Field(default=0, ge=-100, le=100, strict=True)
+    contrast: int = Field(default=100, ge=0, le=200, strict=True)
+
+
+class ColorPreviewRequest(ColorAdjustments):
+    frame_id: FrameId
+
+
+class ExportRequest(ColorAdjustments):
     cutoff: float | None = Field(default=None, ge=0, allow_inf_nan=False)
     start_frame_id: FrameId | None = None
     end_frame_id: FrameId | None = None

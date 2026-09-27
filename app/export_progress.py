@@ -3,6 +3,8 @@
 import json
 import time
 
+from .color_adjustments import enabled as color_adjustments_enabled
+
 
 class ExportProgress:
     def __init__(self, store, job_id):
@@ -49,6 +51,9 @@ def progress_details(job, now=None):
         stages.insert(0, 'scene_analysis')
         position = stages.index('overlay') if 'overlay' in stages else stages.index('encoding')
         stages[position:position] = ['focus_analysis', 'focusing']
+    if color_adjustments_enabled(job):
+        position = stages.index('overlay') if 'overlay' in stages else stages.index('encoding')
+        stages.insert(position, 'grading')
     return {
         **state,
         'stage_number': stages.index(state['stage']) + 1,

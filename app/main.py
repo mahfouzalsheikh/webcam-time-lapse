@@ -8,7 +8,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from . import camera
-from .models import CinematicAnalysisRequest, CameraDevice, ExportRequest, FrameId, FrameSelection, PreviewRequest, Settings
+from .models import ColorPreviewRequest, CinematicAnalysisRequest, CameraDevice, ExportRequest, FrameId, FrameSelection, PreviewRequest, Settings
 from .service import Recorder
 from .projects import Projects
 from .video import export_details
@@ -159,7 +159,15 @@ def create_app(data_dir=None, demo=None):
 
     @router.get("/exports")
     async def exports(recorder: Recorder = Depends(get_recorder)):
-        return [export_details(job) for job in recorder.store.rows("SELECT id,created_at,status,frames,fps,error,settings,normalize_lighting,timing_overlay,cinematic_focus,cinematic_zoom_percent,cinematic_reset_threshold,interpolation,intermediate_frames,start_frame_id,end_frame_id,progress FROM exports ORDER BY created_at DESC LIMIT 20")]
+        return [export_details(job) for job in recorder.store.rows("SELECT id,created_at,status,frames,fps,error,settings,normalize_lighting,timing_overlay,cinematic_focus,cinematic_zoom_percent,cinematic_reset_threshold,brightness,contrast,interpolation,intermediate_frames,start_frame_id,end_frame_id,progress FROM exports ORDER BY created_at DESC LIMIT 20")]
+
+    @router.post("/color-preview")
+    async def color_preview(request: ColorPreviewRequest, recorder: Recorder = Depends(get_recorder)):
+        try:
+            content = await recorder.preview_frame(request.frame_id, dict(brightness=request.brightness, contrast=request.contrast))
+        except KeyError:
+            raise HTTPException(404, "Photo not found in this project")
+        return Response(content, media_type="image/png")
 
     @router.post("/cinematic-analysis")
     async def cinematic_analysis(request: CinematicAnalysisRequest, recorder: Recorder = Depends(get_recorder)):

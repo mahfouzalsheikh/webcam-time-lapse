@@ -14,7 +14,7 @@ from zoneinfo import ZoneInfo
 
 from PIL import Image, ImageOps
 
-from . import camera, cinematic, dslr, lighting, timing_overlay
+from . import camera, cinematic, color_adjustments, dslr, lighting, timing_overlay
 from .models import ExportRequest, Settings
 from .store import Store
 from .video import export_details, export_filters
@@ -355,11 +355,14 @@ class Recorder:
                 temporary.unlink(missing_ok=True)
         return target.read_bytes()
 
-    async def preview_frame(self, frame_id):
+    async def preview_frame(self, frame_id, adjustments=None):
         # Bound decoding memory, and finish in-flight work before deleting files.
         async with self.preview_lock:
             self.ensure_available()
-            task = asyncio.create_task(asyncio.to_thread(self.preview_sync, frame_id))
+            def render():
+                jpeg = self.preview_sync(frame_id)
+                return color_adjustments.preview(jpeg, **adjustments) if adjustments is not None else jpeg
+            task = asyncio.create_task(asyncio.to_thread(render))
             try:
                 return await asyncio.shield(task)
             except asyncio.CancelledError:
@@ -399,11 +402,11 @@ class Recorder:
                 self.cinematic_analysis_cache = ids, changes
             return dict(frames=len(ids), changes=self.cinematic_analysis_cache[1])
 
-    async def create_export(self, cutoff=None, normalize_lighting=False, *, interpolation="none", intermediate_frames=5, fps=None, start_frame_id=None, end_frame_id=None, resolution="project", timing_overlay=False, cinematic_focus=False, cinematic_zoom_percent=20, cinematic_reset_threshold=45):
+    async def create_export(self, cutoff=None, normalize_lighting=False, *, interpolation="none", intermediate_frames=5, fps=None, start_frame_id=None, end_frame_id=None, resolution="project", timing_overlay=False, cinematic_focus=False, cinematic_zoom_percent=20, cinematic_reset_threshold=45, brightness=0, contrast=100):
         options = ExportRequest(cutoff=cutoff, normalize_lighting=normalize_lighting,
                                 interpolation=interpolation, intermediate_frames=intermediate_frames, fps=fps,
                                 start_frame_id=start_frame_id, end_frame_id=end_frame_id, resolution=resolution,
-                                timing_overlay=timing_overlay, cinematic_focus=cinematic_focus, cinematic_zoom_percent=cinematic_zoom_percent, cinematic_reset_threshold=cinematic_reset_threshold)
+                                timing_overlay=timing_overlay, cinematic_focus=cinematic_focus, cinematic_zoom_percent=cinematic_zoom_percent, cinematic_reset_threshold=cinematic_reset_threshold, brightness=brightness, contrast=contrast)
         normalize_lighting = options.normalize_lighting or options.cinematic_focus
         self.ensure_available()
         # No await between checking and registering the task: requests cannot overlap here.
@@ -425,8 +428,8 @@ class Recorder:
             job = {"id": uuid.uuid4().hex, "created_at": time.time(), "status": "queued", "frames": count, "fps": settings.export_fps, "error": None, "normalize_lighting": normalize_lighting,
                    "interpolation": options.interpolation, "intermediate_frames": options.intermediate_frames if options.interpolation != "none" else 0,
                    "start_frame_id": options.start_frame_id, "end_frame_id": options.end_frame_id, "timing_overlay": options.timing_overlay,
-                   "cinematic_focus": options.cinematic_focus, "cinematic_zoom_percent": options.cinematic_zoom_percent, "cinematic_reset_threshold": options.cinematic_reset_threshold}
-            db.execute("INSERT INTO exports(id,created_at,status,frames,fps,error,settings,snapshot,normalize_lighting,interpolation,intermediate_frames,start_frame_id,end_frame_id,timing_overlay,cinematic_focus,cinematic_zoom_percent,cinematic_reset_threshold) VALUES (:id,:created_at,:status,:frames,:fps,:error,:settings,1,:normalize_lighting,:interpolation,:intermediate_frames,:start_frame_id,:end_frame_id,:timing_overlay,:cinematic_focus,:cinematic_zoom_percent,:cinematic_reset_threshold)", {**job, "settings": settings.model_dump_json()})
+                   "cinematic_focus": options.cinematic_focus, "cinematic_zoom_percent": options.cinematic_zoom_percent, "cinematic_reset_threshold": options.cinematic_reset_threshold, "brightness": options.brightness, "contrast": options.contrast}
+            db.execute("INSERT INTO exports(id,created_at,status,frames,fps,error,settings,snapshot,normalize_lighting,interpolation,intermediate_frames,start_frame_id,end_frame_id,timing_overlay,cinematic_focus,cinematic_zoom_percent,cinematic_reset_threshold,brightness,contrast) VALUES (:id,:created_at,:status,:frames,:fps,:error,:settings,1,:normalize_lighting,:interpolation,:intermediate_frames,:start_frame_id,:end_frame_id,:timing_overlay,:cinematic_focus,:cinematic_zoom_percent,:cinematic_reset_threshold,:brightness,:contrast)", {**job, "settings": settings.model_dump_json()})
             db.execute(f"INSERT INTO export_frames SELECT ?,id FROM frames WHERE {predicate} AND excluded=0", (job["id"], *params))
         self.export_task = asyncio.create_task(self.run_exports())
         return export_details({**job, "settings": settings.model_dump_json()})
@@ -478,15 +481,22 @@ class Recorder:
             paths = [self.root / "frames" / f"{row['id']}.jpg" for row in rows]
             scenes = cinematic.scene_ranges(paths, check_export, progress.report, job.get("cinematic_reset_threshold", 45)) if job.get("cinematic_focus") else None
             shots = None
-            if job.get("normalize_lighting"):
+            adjusted = color_adjustments.enabled(job)
+            use_corrected = job.get("normalize_lighting") or adjusted
+            if use_corrected:
                 corrected.mkdir()
+            if job.get("normalize_lighting"):
                 lighting.prepare_frames(paths, corrected, check_export, progress.report, scenes)
                 if job.get("cinematic_focus"):
                     shots = cinematic.prepare_frames([corrected / f"{row['id']}.png" for row in rows], check_export, progress.report, scenes)
+            if adjusted:
+                inputs = [corrected / f"{row['id']}.png" for row in rows] if job.get("normalize_lighting") else paths
+                color_adjustments.prepare_frames(inputs, corrected, check_export, job.get("brightness", 0),
+                                                 job.get("contrast", 100), progress.report)
             with manifest.open("w") as handle:
                 for row in rows:
                     # Relative paths contain only internally generated hex IDs.
-                    path = f"{corrected.name}/{row['id']}.png" if job.get("normalize_lighting") else f"../frames/{row['id']}.jpg"
+                    path = f"{corrected.name}/{row['id']}.png" if use_corrected else f"../frames/{row['id']}.jpg"
                     handle.write(f"file '{path}'\n")
             factor = job.get("intermediate_frames", 0) + 1 if job.get("interpolation", "none") != "none" and job["frames"] > 1 else 1
             bounds = None

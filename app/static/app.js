@@ -387,6 +387,7 @@ function exportProgressView(job) {
   const box = el("div", undefined, "export-progress"), state = job.progress;
   const labels = {
     scene_analysis: "Detecting camera angle changes",
+    grading: "Adjusting brightness and contrast",
     analyzing: "Analyzing lighting",
     normalizing: "Normalizing photos",
     overlay: "Drawing timing overlay",
@@ -424,8 +425,9 @@ function exportProgressView(job) {
     : state.stage === "analyzing" ? "Next: photo normalization, then video rendering."
     : state.stage === "normalizing" && job.cinematic_focus ? "Next: cinematic focus, then video rendering."
     : state.stage === "focus_analysis" ? "Next: softening the background while keeping changing areas sharp."
-    : ["normalizing", "focusing"].includes(state.stage) && job.timing_overlay ? "Next: timing overlay, then video rendering."
-    : ["normalizing", "focusing", "overlay"].includes(state.stage) ? "Next: video rendering; its remaining time will be estimated when it starts."
+    : ["normalizing", "focusing"].includes(state.stage) && (job.brightness || (job.contrast ?? 100) !== 100) ? "Next: brightness and contrast adjustments, then video rendering."
+    : ["normalizing", "focusing", "grading"].includes(state.stage) && job.timing_overlay ? "Next: timing overlay, then video rendering."
+    : ["normalizing", "focusing", "grading", "overlay"].includes(state.stage) ? "Next: video rendering; its remaining time will be estimated when it starts."
     : state.stage === "encoding" ? "The download appears after the video is finalized."
     : "Frames are ready. Finalizing the MP4 for download…";
   box.append(el("p", next, "help"));
@@ -450,7 +452,7 @@ function renderExports(jobs, id) {
       el("h3", date(job.created_at)),
       el(
         "p",
-        `${job.frames} photos · ${job.output_frames ?? job.frames} video frames · ${job.fps} fps${job.width && job.height ? ` · ${job.width} × ${job.height}` : ""} · ${(job.duration_seconds ?? job.frames / job.fps).toFixed(2)} seconds${job.start_frame_id || job.end_frame_id ? " · Custom range" : ""}${job.interpolation && job.interpolation !== "none" ? ` · ${job.interpolation === "repeat" ? "Repeat photos" : job.interpolation === "blend" ? "Blend" : "Motion interpolation"}, ${job.intermediate_frames} added per gap` : ""}${job.normalize_lighting ? " · Lighting normalized" : ""}${job.timing_overlay ? " · Elapsed-time rings" : ""}${job.cinematic_focus ? ` · Cinematic, ${job.cinematic_zoom_percent ?? 20}% zoom, ${job.cinematic_reset_threshold ?? 45}% reset threshold` : ""}`,
+        `${job.frames} photos · ${job.output_frames ?? job.frames} video frames · ${job.fps} fps${job.width && job.height ? ` · ${job.width} × ${job.height}` : ""} · ${(job.duration_seconds ?? job.frames / job.fps).toFixed(2)} seconds${job.start_frame_id || job.end_frame_id ? " · Custom range" : ""}${job.interpolation && job.interpolation !== "none" ? ` · ${job.interpolation === "repeat" ? "Repeat photos" : job.interpolation === "blend" ? "Blend" : "Motion interpolation"}, ${job.intermediate_frames} added per gap` : ""}${job.normalize_lighting ? " · Lighting normalized" : ""}${job.brightness || (job.contrast ?? 100) !== 100 ? ` · Brightness ${job.brightness > 0 ? "+" : ""}${job.brightness ?? 0}%, contrast ${job.contrast ?? 100}%` : ""}${job.timing_overlay ? " · Elapsed-time rings" : ""}${job.cinematic_focus ? ` · Cinematic, ${job.cinematic_zoom_percent ?? 20}% zoom, ${job.cinematic_reset_threshold ?? 45}% reset threshold` : ""}`,
       ),
     );
     if (job.error) info.append(el("p", job.error, "error"));
@@ -862,7 +864,7 @@ $("resolution").onchange = () => {
 };
 
 function savedExportOptions(id) {
-  const fallback = { interpolation: "none", intermediate_frames: 5, fps: null, normalize_lighting: false, timing_overlay: false, cinematic_focus: false, cinematic_zoom_percent: 20, cinematic_reset_threshold: 45, resolution: "project" };
+  const fallback = { interpolation: "none", intermediate_frames: 5, fps: null, normalize_lighting: false, timing_overlay: false, cinematic_focus: false, cinematic_zoom_percent: 20, cinematic_reset_threshold: 45, brightness: 0, contrast: 100, resolution: "project" };
   try {
     const value = JSON.parse(localStorage.getItem(`video-export-options:${id}`));
     if (!value || !["none", "repeat", "blend", "motion"].includes(value.interpolation) ||
@@ -871,6 +873,8 @@ function savedExportOptions(id) {
     return { ...value, normalize_lighting: value.normalize_lighting === true, timing_overlay: value.timing_overlay === true, cinematic_focus: value.cinematic_focus === true,
       cinematic_zoom_percent: Number.isInteger(value.cinematic_zoom_percent) && value.cinematic_zoom_percent >= 0 && value.cinematic_zoom_percent <= 100 ? value.cinematic_zoom_percent : 20,
       cinematic_reset_threshold: Number.isInteger(value.cinematic_reset_threshold) && value.cinematic_reset_threshold >= 0 && value.cinematic_reset_threshold <= 100 ? value.cinematic_reset_threshold : 45,
+      brightness: Number.isInteger(value.brightness) && value.brightness >= -100 && value.brightness <= 100 ? value.brightness : 0,
+      contrast: Number.isInteger(value.contrast) && value.contrast >= 0 && value.contrast <= 200 ? value.contrast : 100,
       resolution: ["project", "720p", "1080p", "2160p"].includes(value.resolution) ? value.resolution : "project" };
   } catch { return fallback; }
 }
@@ -890,6 +894,8 @@ function initExportOptions(p) {
   $("cinematic-focus").checked = options.cinematic_focus;
   $("cinematic-zoom-percent").value = options.cinematic_zoom_percent;
   $("cinematic-reset-threshold").value = options.cinematic_reset_threshold;
+  $("export-brightness").value = options.brightness;
+  $("export-contrast").value = options.contrast;
 }
 function videoExportOptions() {
   return {
@@ -901,6 +907,8 @@ function videoExportOptions() {
     cinematic_focus: $("cinematic-focus").checked,
     cinematic_zoom_percent: Number($("cinematic-zoom-percent").value),
     cinematic_reset_threshold: Number($("cinematic-reset-threshold").value),
+    brightness: Number($("export-brightness").value),
+    contrast: Number($("export-contrast").value),
     resolution: $("video-export-resolution").value,
   };
 }
@@ -911,6 +919,67 @@ function showExportEstimate(text) {
   // Avoid repeating screen-reader announcements during background polling.
   if ($("export-estimate").textContent !== text) $("export-estimate").textContent = text;
 }
+let colorPreviewFrame = null, colorPreviewKey = null, colorPreviewUrl;
+let colorPreviewTimer, colorPreviewController;
+function clearColorPreview() {
+  clearTimeout(colorPreviewTimer);
+  colorPreviewController?.abort();
+  colorPreviewController = null;
+  if (colorPreviewUrl) URL.revokeObjectURL(colorPreviewUrl);
+  colorPreviewUrl = null;
+  colorPreviewFrame = colorPreviewKey = null;
+  $("color-original").removeAttribute("src");
+  $("color-adjusted").removeAttribute("src");
+  $("color-preview-pair").hidden = true;
+  $("color-preview-status").textContent = "Select a frame to preview adjustments.";
+}
+function useColorPreviewFrame() {
+  if (!currentFrame || !timeline) return;
+  clearColorPreview();
+  colorPreviewFrame = { ...currentFrame, projectId: timeline.id };
+  updateColorPreview();
+}
+function updateColorPreview() {
+  const brightness = Number($("export-brightness").value);
+  const contrast = Number($("export-contrast").value);
+  $("brightness-value").textContent = `${brightness > 0 ? "+" : ""}${brightness}%`;
+  $("contrast-value").textContent = `${contrast}%`;
+  if (!colorPreviewFrame || colorPreviewFrame.projectId !== currentId || tab !== "videos") return;
+  const frame = colorPreviewFrame;
+  const key = JSON.stringify([frame.projectId, frame.id, brightness, contrast]);
+  if (key === colorPreviewKey) return;
+  clearTimeout(colorPreviewTimer);
+  colorPreviewController?.abort();
+  colorPreviewKey = key;
+  $("color-preview-pair").hidden = true;
+  $("color-preview-status").textContent = "Updating the selected frame preview…";
+  colorPreviewTimer = setTimeout(async () => {
+    const controller = new AbortController();
+    colorPreviewController = controller;
+    try {
+      const blob = await api(endpoint(frame.projectId, "color-preview"), "POST",
+        { frame_id: frame.id, brightness, contrast }, controller.signal);
+      if (controller.signal.aborted || key !== colorPreviewKey || frame.projectId !== currentId) return;
+      if (colorPreviewUrl) URL.revokeObjectURL(colorPreviewUrl);
+      colorPreviewUrl = URL.createObjectURL(blob);
+      $("color-original").src = media(frame.projectId, "previews", `${frame.id}.jpg`);
+      $("color-adjusted").src = colorPreviewUrl;
+      $("color-preview-pair").hidden = false;
+      $("color-preview-status").textContent = `Previewing ${date(frame.captured_at)} · Brightness ${brightness > 0 ? "+" : ""}${brightness}%, contrast ${contrast}%.`;
+    } catch (error) {
+      if (controller.signal.aborted || key !== colorPreviewKey) return;
+      colorPreviewKey = null;
+      $("color-preview-status").textContent = `Could not preview this frame: ${error.message}`;
+    }
+  }, 250);
+}
+$("color-use-frame").onclick = useColorPreviewFrame;
+$("color-reset").onclick = () => {
+  $("export-brightness").value = "0";
+  $("export-contrast").value = "100";
+  $("export-brightness").dispatchEvent(new Event("input"));
+};
+
 let cinematicAnalysisKey = null, cinematicAnalysisData = null;
 let cinematicAnalysisTimer, cinematicAnalysisController;
 function clearCinematicAnalysis() {
@@ -973,6 +1042,7 @@ function updateCinematicResetAnalysis() {
   }, 300);
 }
 function updateExportEstimate() {
+  updateColorPreview();
   const cinematic = $("cinematic-focus").checked;
   updateCinematicResetAnalysis();
   $("cinematic-zoom-percent").disabled = !cinematic;
@@ -1003,7 +1073,7 @@ function updateExportEstimate() {
   showExportEstimate(`${count.toLocaleString()} selected photos + ${added.toLocaleString()} generated frames = ${frames.toLocaleString()} video frames · ${(frames / options.fps).toFixed(2)} seconds at ${options.fps} fps · ${dimensions}.${count === 1 && smooth ? " Select at least two photos to generate intermediate frames." : ""}`);
   return true;
 }
-for (const id of ["smooth-motion", "interpolation-method", "intermediate-frames", "video-export-fps", "video-export-resolution", "normalize-lighting", "timing-overlay", "cinematic-focus", "cinematic-zoom-percent", "cinematic-reset-threshold"]) {
+for (const id of ["smooth-motion", "interpolation-method", "intermediate-frames", "video-export-fps", "video-export-resolution", "normalize-lighting", "timing-overlay", "cinematic-focus", "cinematic-zoom-percent", "cinematic-reset-threshold", "export-brightness", "export-contrast"]) {
   const updateOption = () => {
     if (currentId && updateExportEstimate()) {
       const options = videoExportOptions();
@@ -1092,6 +1162,7 @@ function stopPlayback(sharpen = false) {
   if (sharpen && currentFrame && timeline) sharpenFrame(currentFrame);
 }
 function resetTimeline() {
+  clearColorPreview();
   stopPlayback();
   clearTimeout(rangeTimer);
   rangeRequest++;
@@ -1117,6 +1188,7 @@ function resetTimeline() {
 }
 function updateVideoButtons() {
   const blocked = !timeline || timelineLoading || selectionBusy;
+  $("color-use-frame").disabled = blocked || !currentFrame || playing;
   const validOptions = updateExportEstimate();
   $("export-button").disabled = blocked || exportBusy || rangePending || !exportRange.count || !validOptions;
   $("play-timeline").disabled = blocked || rangePending || rangeInvalid || !exportRange.count;
@@ -1219,6 +1291,7 @@ function renderTimelineFrames() {
 function displayFrame(frame, imageSource) {
   cancelSharpPreview();
   currentFrame = frame;
+  if (!colorPreviewFrame && !playing) useColorPreviewFrame();
   frameIndex = Math.max(0, frame.video_index);
   $("timeline-scrubber").value = frameIndex;
   $("timeline-scrubber").setAttribute("aria-valuetext", `Frame ${frameIndex + 1} of ${timeline.included}`);
